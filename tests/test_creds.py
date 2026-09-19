@@ -142,10 +142,148 @@ class ResolveCredentialsTests(unittest.TestCase):
             self.assertFalse(r.key_mismatch)
             self.assertEqual(r.api_key, "sk_custom")
 
-    def test_url_override_wins(self):
-        with TempStore(_store(), VAIBOT_GOVERNANCE_URL="http://127.0.0.1:8080/") as env:
+    def test_staging_url_override_is_honoured(self):
+        with TempStore(_store(), VAIBOT_ENV="staging",
+                       VAIBOT_GOVERNANCE_URL="http://127.0.0.1:8080/") as env:
             # Trailing slash is stripped, matching the Node implementation.
             self.assertEqual(creds.resolve_credentials(env).api_base_url, "http://127.0.0.1:8080")
+
+    def test_production_url_override_needs_the_flag(self):
+        # §5: without VAIBOT_ALLOW_URL_OVERRIDE an env var alone must not send a
+        # production key to a host of its choosing.
+        seeded = _store("production", {"production": {"api_key": "vb_live_abc"}})
+        with TempStore(seeded, VAIBOT_GOVERNANCE_URL="https://attacker.invalid") as env:
+            self.assertEqual(creds.resolve_credentials(env).api_base_url, "https://api.vaibot.io")
+        with TempStore(seeded, VAIBOT_GOVERNANCE_URL="https://attacker.invalid",
+                       VAIBOT_ALLOW_URL_OVERRIDE="1") as env:
+            self.assertEqual(creds.resolve_credentials(env).api_base_url, "https://attacker.invalid")
+
+    def test_api_url_infers_env_but_is_never_a_base(self):
+        with TempStore(_store(), VAIBOT_API_URL="https://staging-api.vaibot.io/v2") as env:
+            r = creds.resolve_credentials(env)
+            self.assertEqual(r.env, "staging")
+            self.assertEqual(r.api_base_url, "https://staging-api.vaibot.io")
+        with TempStore(_store(), VAIBOT_ENV="staging", VAIBOT_API_URL="http://127.0.0.1:9") as env:
+            self.assertEqual(creds.resolve_credentials(env).api_base_url, "https://staging-api.vaibot.io")
+
+    def test_stored_governance_slot_url_is_used(self):
+        seeded = _store("staging", {"staging": {"api_key": "vb_stg_x",
+                                                "governance": {"url": "http://127.0.0.1:7000/"}}})
+        with TempStore(seeded) as env:
+            self.assertEqual(creds.resolve_credentials(env).api_base_url, "http://127.0.0.1:7000")
+
+
+class EnvForApiUrlTests(unittest.TestCase):
+    def test_matches_on_host_only(self):
+        self.assertEqual(creds.env_for_api_url("https://api.vaibot.io"), "production")
+        self.assertEqual(creds.env_for_api_url("https://api.vaibot.io:443/v2"), "production")
+        self.assertEqual(creds.env_for_api_url("https://staging-api.vaibot.io"), "staging")
+        self.assertEqual(creds.env_for_api_url("http://my-staging-box:8080"), "staging")
+
+    def test_substrings_outside_the_host_do_not_count(self):
+        self.assertIsNone(creds.env_for_api_url("https://evil.invalid/?x=api.vaibot.io"))
+        self.assertIsNone(creds.env_for_api_url("https://evil.invalid/staging"))
+        self.assertIsNone(creds.env_for_api_url("https://api.vaibot.io.evil.invalid"))
+        self.assertIsNone(creds.env_for_api_url("not a url"))
+        self.assertIsNone(creds.env_for_api_url(""))
+
+
+class MigrationTests(unittest.TestCase):
+    def test_v1_flat_file_is_lifted_into_its_env(self):
+        with TempStore({"api_key": "vb_stg_legacy", "api_url": "https://staging-api.vaibot.io"}) as env:
+            r = creds.resolve_credentials(env)
+            self.assertEqual((r.env, r.api_key), ("staging", "vb_stg_legacy"))
+
+    def test_v1_flat_file_without_url_uses_the_key_prefix(self):
+        with TempStore({"api_key": "vb_live_legacy"}) as env:
+            self.assertEqual(creds.resolve_credentials(env).api_key, "vb_live_legacy")
+
+    def test_keyless_records_are_dropped(self):
+        store = creds.migrate_store({"version": 3, "active_env": "staging",
+                                     "environments": {"staging": {"wallet_address": "0x1"}}})
+        self.assertEqual(store["environments"], {})
+
+
+# Fixtures resolved by BOTH implementations. Each is (env vars, store payload).
+_PARITY_FIXTURES = [
+    ({}, _store("production", {"production": {"api_key": "vb_live_a"}})),
+    ({}, _store("production", {"production": {"api_key": "vb_stg_mismatch"}})),
+    ({"VAIBOT_ENV": "production"}, _store("production", {"production": {"api_key": "vb_stg_mismatch"}})),
+    ({"VAIBOT_ENV": "staging"}, _store("production", {"production": {"api_key": "vb_live_a"}})),
+    ({"VAIBOT_API_KEY": "vb_stg_env"}, _store("production", {"production": {"api_key": "vb_live_a"}})),
+    ({"VAIBOT_API_URL": "https://staging-api.vaibot.io"}, _store()),
+    ({"VAIBOT_API_URL": "https://evil.invalid/?x=api.vaibot.io"}, _store("staging")),
+    ({"VAIBOT_GOVERNANCE_URL": "https://attacker.invalid"}, _store("production", {"production": {"api_key": "vb_live_a"}})),
+    ({"VAIBOT_GOVERNANCE_URL": "https://ok.invalid/", "VAIBOT_ALLOW_URL_OVERRIDE": "yes"}, _store()),
+    ({"VAIBOT_ENV": "staging", "VAIBOT_GOVERNANCE_URL": "http://127.0.0.1:1/"}, _store()),
+    ({}, _store("staging", {"staging": {"api_key": "sk_custom", "governance": {"url": "http://127.0.0.1:2/"}}})),
+    ({}, {"api_key": "vb_stg_legacy", "api_url": "https://staging-api.vaibot.io"}),
+    ({}, {"api_key": "vb_live_legacy"}),
+    ({}, "{not json"),
+    ({}, None),
+]
+
+_NODE_RESOLVER = r"""
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+const { resolveCredentials } = await import(process.argv[2])
+let raw = ''
+for await (const c of process.stdin) raw += c
+const out = []
+for (const [envVars, payload] of JSON.parse(raw)) {
+  const dir = mkdtempSync(join(tmpdir(), 'vaibot-creds-parity-'))
+  if (payload !== null) writeFileSync(join(dir, 'credentials.json'), typeof payload === 'string' ? payload : JSON.stringify(payload))
+  const r = resolveCredentials({ env: { ...envVars, VAIBOT_CREDS_DIR: dir } })
+  out.push({ env: r.env, api_base_url: r.apiBaseUrl, api_key: r.apiKey ?? null, key_mismatch: r.keyMismatch })
+}
+process.stdout.write(JSON.stringify(out))
+"""
+
+
+def _node_creds_module():
+    """The guard's creds.mjs from this checkout, or None when unavailable."""
+    import shutil
+
+    override = os.environ.get("VAIBOT_GUARD_SRC")
+    root = Path(override) if override else Path(__file__).resolve().parents[2] / "vaibot-guard"
+    module = root / "scripts" / "lib" / "creds.mjs"
+    node = shutil.which("node")
+    return (node, module) if node and module.is_file() else None
+
+
+class NodeParityTests(unittest.TestCase):
+    """The Python port and the Node original must resolve identically.
+
+    This is the test that would have caught S1 shipping without the §5 gate.
+    Skipped only where node or the guard source isn't available.
+    """
+
+    def test_python_and_node_resolve_identically(self):
+        found = _node_creds_module()
+        if not found:
+            self.skipTest("node or the guard's creds.mjs is not available")
+        node, module = found
+
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "resolve.mjs"
+            script.write_text(_NODE_RESOLVER, encoding="utf-8")
+            proc = subprocess.run(
+                [node, str(script), module.as_uri()],
+                input=json.dumps(_PARITY_FIXTURES), capture_output=True, text=True, timeout=30,
+                env={"PATH": os.environ.get("PATH", "")},
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        node_results = json.loads(proc.stdout)
+
+        for (env_vars, payload), expected in zip(_PARITY_FIXTURES, node_results):
+            with TempStore(payload, **env_vars) as env:
+                r = creds.resolve_credentials(env)
+                got = {"env": r.env, "api_base_url": r.api_base_url,
+                       "api_key": r.api_key, "key_mismatch": r.key_mismatch}
+            self.assertEqual(got, expected, f"fixture env={env_vars} store={payload!r}")
 
 
 if __name__ == "__main__":
