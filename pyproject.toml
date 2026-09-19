@@ -1,0 +1,34 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vaibot-hermes-circuitbreaker"
+version = "0.1.0"
+description = "VAIBot governance plugin for Hermes — routes tool calls through the local vaibot-guard and writes signed, tamper-evident receipts."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Campbell Labs LLC" }]
+keywords = ["hermes", "governance", "circuit-breaker", "vaibot", "agent-safety", "audit", "provenance"]
+
+# Intentionally empty. The plugin loads in-process inside the user's agent on a
+# security path, so it adds no dependency surface: HTTP is urllib, the daemon is
+# reached over loopback, and the risk classifier is delegated to the guard's own
+# `vaibot-guard classify` rather than reimplemented here.
+dependencies = []
+
+[project.urls]
+Homepage = "https://www.vaibot.io"
+
+# Hermes discovers plugins either from ~/.hermes/plugins/<name>/ or from this
+# entry-point group. The `vaibot/` directory is self-contained (plugin.yaml +
+# __init__.py), so the same tree serves both installation paths unchanged.
+[project.entry-points."hermes_agent.plugins"]
+vaibot = "vaibot"
+
+[tool.hatch.build.targets.wheel]
+packages = ["vaibot"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"vaibot/plugin.yaml" = "vaibot/plugin.yaml"
