@@ -1,6 +1,6 @@
 name: vaibot
-version: "0.1.0"
-description: "VAIBot governance — routes every tool call through the local vaibot-guard and writes signed, tamper-evident receipts. S1: provenance only; this build does not block or escalate."
+version: "0.2.0"
+description: "VAIBot governance — routes every tool call through the local VAIBot guard, blocks or escalates per policy, and writes signed, tamper-evident receipts. Degrades to the guard's own local floor when governance is unreachable."
 author: "Campbell Labs LLC"
 # No pip_dependencies: the plugin is standard-library only. It runs in-process
 # inside the user's agent on a security path, so it adds no dependency surface.

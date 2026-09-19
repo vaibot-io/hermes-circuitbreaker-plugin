@@ -6,9 +6,9 @@ library — a component sitting on a security path inside someone else's agent
 should add as little surface as possible, and the calls are localhost JSON.
 
 **Discovery is via the rendezvous lock, never a hardcoded port.** The daemon
-writes ``~/.vaibot/guard/guard.json`` with the host/port/token it actually bound;
-on this machine that was 39116, not the 39111 default. Assuming the default is a
-silent way to govern nothing.
+writes ``~/.vaibot/guard/guard.json`` with the host/port/token it actually bound,
+which is often not the default when another guard already holds that port.
+Assuming the default is a silent way to govern nothing.
 """
 
 from __future__ import annotations
@@ -125,14 +125,46 @@ def _post_json(
         return GuardResponse(ok=False, unreachable=True, error=str(exc))
 
 
-def health(lock: GuardLock, timeout_s: float = 2.0) -> bool:
-    """Probe /health. Used to tell a live guard from a stale lock."""
+@dataclass(frozen=True)
+class Health:
+    #: What the live daemon's decisions understand (e.g. "host-vocab:hermes").
+    #: Empty for a guard that predates the field.
+    capabilities: frozenset = frozenset()
+    version: Optional[str] = None
+
+
+def probe(lock: GuardLock, timeout_s: float = 2.0) -> Optional[Health]:
+    """GET /health on the live daemon, or None when nothing healthy answers.
+
+    Tells a live guard from a stale lock, and reports its capabilities. Read
+    from the daemon itself rather than the lock, which can outlive the process
+    that wrote it.
+    """
     try:
         req = urllib.request.Request(f"http://{lock.host}:{lock.port}/health", method="GET")
         with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-            return 200 <= resp.status < 300
+            if not 200 <= resp.status < 300:
+                return None
+            text = resp.read().decode("utf-8", errors="replace")
     except Exception:
-        return False
+        return None
+    try:
+        data = json.loads(text or "{}")
+    except ValueError:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    caps = data.get("capabilities")
+    version = data.get("version")
+    return Health(
+        capabilities=frozenset(c for c in caps if isinstance(c, str)) if isinstance(caps, list) else frozenset(),
+        version=version if isinstance(version, str) else None,
+    )
+
+
+def health(lock: GuardLock, timeout_s: float = 2.0) -> bool:
+    """Probe /health. Used to tell a live guard from a stale lock."""
+    return probe(lock, timeout_s) is not None
 
 
 @dataclass(frozen=True)
@@ -208,10 +240,18 @@ def finalize_tool(
     outcome: str,
     duration_ms: Optional[float] = None,
     error: Optional[str] = None,
+    approval: Optional[str] = None,
     timeout_s: float = DEFAULT_TIMEOUT_S,
 ) -> GuardResponse:
-    """POST /v1/finalize/tool — closes the run and proves the finalize receipt."""
+    """POST /v1/finalize/tool — closes the run and proves the finalize receipt.
+
+    ``approval="denied"`` records that a human (or the gate, on timeout) refused
+    an escalated call. The guard derives the receipt's approval status from the
+    finalize, so an escalated run finalized without it is written as approved.
+    """
     result: Dict[str, Any] = {"outcome": outcome}
+    if approval:
+        result["approval"] = approval
     if isinstance(duration_ms, (int, float)):
         result["duration_ms"] = duration_ms
     if error:

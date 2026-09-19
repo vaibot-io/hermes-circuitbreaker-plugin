@@ -223,6 +223,16 @@ class FinalizeTests(unittest.TestCase):
             guard_client.finalize_tool(g.lock, session_id="s", run_id="r", outcome="allowed")
             self.assertEqual(set(g.server.last_body["result"]), {"outcome"})
 
+    def test_denied_approval_is_sent(self):
+        # Without it the guard writes an escalated run as approved.
+        with FakeGuard() as g:
+            guard_client.finalize_tool(
+                g.lock, session_id="s", run_id="r", outcome="denied_by_reviewer", approval="denied"
+            )
+            self.assertEqual(
+                g.server.last_body["result"], {"outcome": "denied_by_reviewer", "approval": "denied"}
+            )
+
 
 class HealthTests(unittest.TestCase):
     def test_health_true_and_false(self):
@@ -236,6 +246,31 @@ class HealthTests(unittest.TestCase):
         self.assertFalse(
             guard_client.health(guard_client.GuardLock(host="127.0.0.1", port=9, token=""),
                                 timeout_s=1.0)
+        )
+
+
+class ProbeTests(unittest.TestCase):
+    def test_reads_capabilities_from_the_live_daemon(self):
+        with FakeGuard() as g:
+            g.reply(200, {"ok": True, "version": "2.2.0", "capabilities": ["host-vocab:hermes", 7]})
+            h = guard_client.probe(g.lock)
+            self.assertEqual(h.capabilities, frozenset({"host-vocab:hermes"}))
+            self.assertEqual(h.version, "2.2.0")
+
+    def test_a_guard_without_the_field_has_no_capabilities(self):
+        # Every guard released before the field — the case the rename shim serves.
+        with FakeGuard() as g:
+            g.reply(200, {"ok": True, "version": "2.1.1"})
+            self.assertEqual(guard_client.probe(g.lock).capabilities, frozenset())
+            g.reply(200, "not json")
+            self.assertEqual(guard_client.probe(g.lock).capabilities, frozenset())
+
+    def test_unhealthy_or_absent_is_none(self):
+        with FakeGuard() as g:
+            g.reply(503, {"ok": False})
+            self.assertIsNone(guard_client.probe(g.lock))
+        self.assertIsNone(
+            guard_client.probe(guard_client.GuardLock(host="127.0.0.1", port=9, token=""), timeout_s=1.0)
         )
 
 
