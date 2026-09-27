@@ -179,6 +179,23 @@ class Decision:
     floor: bool = False
     risk: Any = None
     effective_mode: Optional[str] = None
+    #: The policy rule that fired, and its subject where one applies — e.g.
+    #: ``file-outside-workspace:~/other/dir``, ``network:example.com``,
+    #: ``token-approve:curl``. Present on escalations and denials from a guard
+    #: advertising ``rule-id``; None from one that predates it. This is the grain
+    #: an ``[a]lways`` answer is scoped to, so a session grant covers the rule
+    #: rather than one exact call or a whole tool.
+    rule_id: Optional[str] = None
+    #: The guard refused an escalation because the host's own approvals are
+    #: switched off — policy ``hostBypassAction: deny``. The call is denied and
+    #: no approval record is minted.
+    bypass_blocked: bool = False
+    #: Policy allows the host to grant this escalation itself
+    #: (``hostBypassAction: approve``). The receipt records ``bypassed``, never
+    #: ``approved``, so provenance never claims a human decided.
+    bypass_override: bool = False
+    #: What the guard resolved the policy's bypass posture to: "deny" | "approve".
+    host_bypass_action: Optional[str] = None
 
 
 def decide_tool(
@@ -189,6 +206,7 @@ def decide_tool(
     params: Optional[Dict[str, Any]] = None,
     workspace_dir: str = "",
     approval_id: Optional[str] = None,
+    host_bypass: Optional[tuple[bool, str]] = None,
     timeout_s: float = DEFAULT_TIMEOUT_S,
 ) -> tuple[Optional[Decision], GuardResponse]:
     """POST /v1/decide/tool.
@@ -205,6 +223,13 @@ def decide_tool(
     }
     if approval_id:
         payload["approval"] = {"approvalId": approval_id}
+    if host_bypass is not None:
+        # Report the host's posture; the guard applies the policy's
+        # hostBypassAction itself. Reporting rather than enforcing is the point:
+        # loosening a bypass to "approve" takes a verified signed bundle, which a
+        # plugin cannot mint. The mechanism is a short label for the receipt.
+        active, mechanism = host_bypass
+        payload["hostBypass"] = {"active": bool(active), "mechanism": mechanism or ""}
 
     resp = _post_json(lock, "/v1/decide/tool", payload, timeout_s)
     if not resp.ok or not isinstance(resp.data, dict):
@@ -227,6 +252,14 @@ def decide_tool(
             floor=inner.get("floor") is True,
             risk=data.get("risk"),
             effective_mode=mode if mode in ("observe", "enforce") else None,
+            rule_id=inner["ruleId"] if isinstance(inner.get("ruleId"), str) else None,
+            bypass_blocked=inner.get("bypassBlocked") is True,
+            bypass_override=inner.get("bypassOverride") is True,
+            host_bypass_action=(
+                data["host_bypass_action"]
+                if data.get("host_bypass_action") in ("deny", "approve")
+                else None
+            ),
         ),
         resp,
     )
