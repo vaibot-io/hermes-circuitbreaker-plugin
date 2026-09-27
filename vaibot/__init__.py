@@ -112,21 +112,43 @@ def _on_pre_tool_call(**kwargs: Any) -> Optional[Dict[str, Any]]:
 
     tool_call_id = str(kwargs.get("tool_call_id") or "")
     if outcome.run_id and tool_call_id:
-        _remember(tool_call_id, {"run_id": outcome.run_id, "escalated": outcome.escalated})
+        # `gate_asked` — did we hand this to Hermes' approval gate, or block it
+        # ourselves? `escalated` alone conflates the two: refusing an auto-granted
+        # escalation is also an escalated run, but it returns a block directive, so
+        # no prompt ever opens. Only the directive distinguishes them.
+        directive = outcome.directive or {}
+        _remember(tool_call_id, {
+            "run_id": outcome.run_id,
+            "escalated": outcome.escalated,
+            "gate_asked": outcome.escalated and directive.get("action") == "approve",
+        })
     return outcome.directive
 
 
 def _finalize_fields(entry: Dict[str, Any], status: str) -> tuple:
-    """(outcome, approval) for the guard's finalize.
+    """(outcome, approval, approval_scope) for the guard's finalize.
 
-    An escalated call that ended ``blocked`` was not granted — the human chose
-    ``[d]eny``, the prompt timed out, no human was present, or VAIBot refused an
-    automatic grant. The guard reads an escalated run as *approved* unless told
-    otherwise, so say so explicitly.
+    A call we handed to Hermes' approval gate and that came back ``blocked`` was
+    not granted: the human chose ``[d]eny``, the prompt timed out, or the gate
+    errored — all three fail closed upstream. The guard reads an escalated run as
+    *approved* unless told otherwise, so say so explicitly, and mark the scope
+    ``prompt`` to record that someone was actually asked.
+
+    A call VAIBot blocked ITSELF is different and must not be recorded as a
+    reviewer denial. Refusing an auto-granted escalation returns a ``block``
+    directive, so Hermes never opens the gate and no human ever sees it. That is a
+    policy deny, and writing it as ``denied_by_reviewer`` would put a decision in
+    a person's mouth that they were never offered.
+
+    What still cannot be told apart from here is *which* of deny, timeout or gate
+    error ended a real prompt. Hermes reports all three as a blocked tool call, and
+    the guard's receipt vocabulary has one state for "not granted" — so nothing
+    honest distinguishes them yet. Claiming ``choice: deny`` for a timeout would be
+    the same error in miniature.
     """
-    if entry.get("escalated") and status == "blocked":
-        return "denied_by_reviewer", "denied"
-    return ("allowed" if status == "ok" else "blocked"), None
+    if entry.get("gate_asked") and status == "blocked":
+        return "denied_by_reviewer", "denied", "prompt"
+    return ("allowed" if status == "ok" else "blocked"), None, None
 
 
 def _on_post_tool_call(**kwargs: Any) -> None:
@@ -146,7 +168,7 @@ def _on_post_tool_call(**kwargs: Any) -> None:
             logger.warning("vaibot: guard gone; run %s left unfinalized", entry["run_id"])
             return None
 
-        outcome, approval = _finalize_fields(entry, str(kwargs.get("status") or "ok"))
+        outcome, approval, approval_scope = _finalize_fields(entry, str(kwargs.get("status") or "ok"))
         error_message = kwargs.get("error_message")
         resp = guard_client.finalize_tool(
             lock,
@@ -156,6 +178,7 @@ def _on_post_tool_call(**kwargs: Any) -> None:
             duration_ms=kwargs.get("duration_ms"),
             error=str(error_message) if error_message else None,
             approval=approval,
+            approval_scope=approval_scope,
         )
         if not resp.ok:
             logger.warning("vaibot: finalize failed for run %s (%s)", entry["run_id"], resp.error or resp.status)

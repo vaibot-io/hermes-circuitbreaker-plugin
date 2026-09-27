@@ -274,17 +274,24 @@ def finalize_tool(
     duration_ms: Optional[float] = None,
     error: Optional[str] = None,
     approval: Optional[str] = None,
+    approval_scope: Optional[str] = None,
     timeout_s: float = DEFAULT_TIMEOUT_S,
 ) -> GuardResponse:
     """POST /v1/finalize/tool — closes the run and proves the finalize receipt.
 
-    ``approval="denied"`` records that a human (or the gate, on timeout) refused
-    an escalated call. The guard derives the receipt's approval status from the
-    finalize, so an escalated run finalized without it is written as approved.
+    ``approval="denied"`` records that the gate refused an escalated call. The
+    guard derives the receipt's approval status from the finalize, so an escalated
+    run finalized without it is written as approved.
+
+    ``approval_scope="prompt"`` records that a prompt actually fired, which is
+    what separates "the gate refused" from "VAIBot refused before anyone was
+    asked". The guard's vocabulary is ``prompt`` | ``session-grant``.
     """
     result: Dict[str, Any] = {"outcome": outcome}
     if approval:
         result["approval"] = approval
+    if approval_scope:
+        result["approvalScope"] = approval_scope
     if isinstance(duration_ms, (int, float)):
         result["duration_ms"] = duration_ms
     if error:
