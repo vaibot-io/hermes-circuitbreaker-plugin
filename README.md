@@ -68,6 +68,29 @@ Needs a running `@vaibot/guard`, and `vaibot-guard` on `PATH` (or `VAIBOT_GUARD_
 | `VAIBOT_GUARD_CLI` | `vaibot-guard` on `PATH` | Guard CLI for `classify` / `bootstrap`; a `.mjs` path runs under node |
 | `VAIBOT_WORKSPACE` | cwd | Workspace sent with each decision |
 
+## `/vaibot`
+
+```
+/vaibot status   what is governing this session right now
+/vaibot help
+```
+
+Registered through Hermes' slash-command API, so it works in a CLI session and through the Telegram and Discord gateways alike. It exists for one moment in particular — an agent has just stopped and you need to know why — so containment and breaker state are read from local state and the guard is probed rather than assumed. It answers with no daemon and no network.
+
+```
+VAIBot status
+
+  Containment   CONTAINED · laptop looks compromised · 4m ago
+  Guard         none found · governing locally from the classifier floor
+  Account       no key yet · production · run `vaibot login`
+  Breaker       healthy
+
+  Every action on this account is blocked, on every machine.
+  Lift it from the dashboard or with `vaibot release`.
+```
+
+It never prints a credential: it says whether a key resolves and for which environment, never the key, and never the guard token. The output can land in a Telegram or Discord channel, so it is written to be public. A Hermes without the slash-command API still loads the plugin — governance outranks a readout.
+
 ## Design notes
 
 **Zero dependencies.** Standard library only. This runs in-process inside your agent on a security path; HTTP is `urllib` and the daemon is loopback. Two things are deliberately *not* reimplemented, because a Python copy would drift from the original: risk classification (`vaibot-guard classify`) and credential writes (`vaibot-guard bootstrap`). One safety floor, one writer for the shared credential store.

@@ -35,6 +35,7 @@ import logging
 import threading
 from typing import Any, Dict, Optional
 
+from . import commands
 from . import guard as guard_client
 from .creds import resolve_credentials
 from .engine import Engine, Settings
@@ -168,6 +169,10 @@ def register(ctx: Any) -> None:
     """Entry point Hermes calls to load the plugin."""
     ctx.register_hook("pre_tool_call", _on_pre_tool_call)
     ctx.register_hook("post_tool_call", _on_post_tool_call)
+    # /vaibot — a status readout for the moment an agent has just been stopped.
+    # Registered defensively: a Hermes without the slash-command API must still
+    # load the plugin, because governance matters more than a readout.
+    commands.register(ctx)
 
     creds = resolve_credentials()
     if creds.key_mismatch:
