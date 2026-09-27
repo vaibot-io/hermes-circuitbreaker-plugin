@@ -1,4 +1,4 @@
-"""VAIBot governance plugin for Hermes — S2: enforcement + degrade ladder.
+"""VAIBot governance plugin for Hermes — the hook layer.
 
 Routes every tool call through the local ``@vaibot/guard``, turns its verdict
 into a Hermes directive, and closes a signed, tamper-evident receipt for it:
@@ -37,6 +37,7 @@ from typing import Any, Dict, Optional
 
 from . import cli, commands, config, launch
 from . import guard as guard_client
+from .containment import block_message as containment_block_message, read_containment
 from .creds import resolve_credentials
 from .engine import Engine, Settings
 
@@ -47,9 +48,15 @@ logger = logging.getLogger("vaibot")
 __version__ = "0.2.0"
 
 #: Governance tools are exempt so a governance call can't recurse into governing
-#: itself. Hermes namespaces MCP tools as ``mcp__<server>__<tool>`` — the same
-#: convention Claude Code uses, so this check ports verbatim.
+#: itself, and so an operator can still lift containment from inside the agent.
+#: Hermes namespaces MCP tools as ``mcp__<server>__<tool>`` — the same convention
+#: Claude Code uses, so this check ports verbatim.
+#:
+#: Matched at the namespace boundary rather than as a bare prefix: an exemption
+#: that any name *beginning* with this satisfied would hand a server called
+#: ``vaibotage`` a tool namespace that is never governed at all.
 _SELF_PREFIX = "mcp__vaibot"
+_SELF_NAMESPACE = _SELF_PREFIX + "__"
 
 #: tool_call_id → run bookkeeping, consumed by post_tool_call. In-process and
 #: mutated from the agent's tool threads, so it takes a lock; a dict here
@@ -94,7 +101,7 @@ def _take(tool_call_id: str) -> Optional[Dict[str, Any]]:
 
 
 def _should_skip(tool_name: str) -> bool:
-    return not tool_name or tool_name.startswith(_SELF_PREFIX)
+    return not tool_name or tool_name == _SELF_PREFIX or tool_name.startswith(_SELF_NAMESPACE)
 
 
 def _on_pre_tool_call(**kwargs: Any) -> Optional[Dict[str, Any]]:
@@ -109,6 +116,14 @@ def _on_pre_tool_call(**kwargs: Any) -> Optional[Dict[str, Any]]:
         outcome = _get_engine().decide(tool_name, args, str(kwargs.get("session_id") or ""))
     except Exception:
         logger.exception("vaibot: governing %s failed", tool_name)
+        # An unexpected failure is one more path that never reached the guard, and
+        # this is the only branch where observe or FAIL_OPEN would run the call
+        # anyway — so the account-wide stop is checked here too. read_containment
+        # never raises and needs no daemon, network or credentials, which is what
+        # makes it safe to trust from inside an error handler.
+        contained = read_containment()
+        if contained.contained:
+            return {"action": "block", "message": containment_block_message(contained)}
         if Settings.from_env().lenient:
             return None
         return {

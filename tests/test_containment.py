@@ -149,7 +149,10 @@ class TestContainmentRung(HomeSandbox):
         )
         self.write_record({"contained": True, "reason": "laptop looks compromised"})
 
-    def _classify(self, tool_name, params):
+    def _classify(self, tool_name, params, env=None):
+        # `env=` because that is how the engine calls it; without it this fake
+        # would raise a TypeError the moment a test reached the classifier, and
+        # the failure would read as a containment bug rather than a fake's.
         self.classified.append(tool_name)
         return ALLOW
 

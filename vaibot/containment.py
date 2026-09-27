@@ -48,6 +48,20 @@ def containment_file() -> Path:
     return guard_dir() / "containment.json"
 
 
+def block_message(state: Containment) -> str:
+    """What the agent is told when containment is engaged.
+
+    One wording, shared by the decision path and by the hook's error path, so the
+    two cannot drift into telling an operator different things about the same
+    machine-wide stop.
+    """
+    why = f" ({state.reason})" if state.reason else ""
+    return (
+        f"VAIBot containment engaged{why} — every action on this account is blocked, on "
+        "every machine. Lift it from the dashboard or with `vaibot release`."
+    )
+
+
 def read_containment(file: Optional[Union[str, Path]] = None) -> Containment:
     """Read the record. Absent or unreadable means NOT engaged.
 
