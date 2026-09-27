@@ -12,10 +12,15 @@ human sees the prompt:
 dangerous-command check honours it — so it isn't counted here.)
 
 A VAIBot escalation is a demand for a human decision; an auto-grant would
-silently satisfy it. The decided posture is that the floor never honours a host
-bypass and, above it, the default is to refuse one — so the engine turns an
-escalation into a block while this returns True. Making that configurable per
-policy is S3.
+silently satisfy it. So this posture is *reported* to the guard on every decision
+and the account's policy decides what it means: ``hostBypassAction: deny`` (the
+default) refuses the escalation outright, and ``approve`` lets Hermes' own gate
+satisfy it while the receipt records ``bypassed`` rather than ``approved``, so
+provenance never claims a human decided.
+
+Two places the refusal is not negotiable: beneath the catastrophic floor, which
+never honours a bypass, and on every degraded rung, where no guard answered and so
+no policy authorised one.
 
 These are Hermes internals, read defensively. If they can't be read inside a
 Hermes process, the answer is True: failing to detect a bypass must cost a

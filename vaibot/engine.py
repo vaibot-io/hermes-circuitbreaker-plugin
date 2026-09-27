@@ -2,6 +2,9 @@
 
 Ported from the Claude Code plugin's PreToolUse hook, rung for rung:
 
+0. **Containment engaged** → the account-wide stop. Read from a machine-wide file
+   with no daemon, no network and no credentials, and checked before anything else
+   in the pipeline, including before settings are resolved.
 1. **No API key** → try to provision one (through the guard CLI). If that can't
    yield a key, govern locally: the classifier's floor denies, risky calls go to
    Hermes' native approval prompt, safe work runs. No receipts until a key exists.
@@ -21,7 +24,11 @@ Two deliberate departures from the Claude Code original, both toward safety:
 * **The floor holds in every mode on the degraded paths too.** The original lets
   a keyless or guard-down call through untouched under observe or FAIL_OPEN; here
   a classifier ``deny`` still blocks, matching what the online path already does.
-* **An escalation Hermes would auto-grant becomes a block** (see hostbypass).
+* **An escalation Hermes would auto-grant is refused unless the account's policy
+  says otherwise** (see hostbypass) — and always refused on a degraded rung, where
+  no guard answered and so nothing authorised a bypass.
+* **An unusable verdict from a reachable guard is a degraded path**, not a
+  decision, so the classifier floor still speaks for it under observe.
 
 The pipeline never raises for an expected failure; the hook wrapper turns an
 unexpected one into a fail-closed block.
@@ -42,7 +49,7 @@ from . import config
 from . import guard as guard_client
 from . import localcli
 from .breaker import BreakerStore, CircuitBreaker
-from .containment import read_containment
+from .containment import block_message as containment_block_message, read_containment
 from .creds import ResolvedCredentials, creds_path, resolve_credentials
 from .hostbypass import approval_autogranted
 from .vocab import guard_tool_name
@@ -209,9 +216,6 @@ class Engine:
     # ── entry point ─────────────────────────────────────────────────────────
 
     def decide(self, tool_name: str, args: Mapping[str, Any], session_id: str = "") -> Outcome:
-        settings = Settings.from_env(self._env)
-        params = _jsonable(args)
-
         # Rung 0 — containment: the account-wide stop, ahead of every rung below.
         #
         # Each rung underneath can let a call through: no key governs locally,
@@ -221,16 +225,21 @@ class Engine:
         # `settings.lenient` — observe does not lift containment, which is the one
         # place this plugin overrides observe mode's "never block" rule.
         #
+        # It is the FIRST statement, ahead of even settings resolution and
+        # argument normalisation: both read something this plugin does not own (the
+        # environment, the host's config, the model's arguments) and so both can
+        # fail, and the hook treats a decision that raised as "no directive" under
+        # observe or FAIL_OPEN. Nothing that can fail may run before the
+        # account-wide stop.
+        #
         # Governance tools are already exempt before decide() is reached (see
         # _should_skip), so an operator can still look at the account and lift it.
-        containment = read_containment()
-        if containment.contained:
-            why = f" ({containment.reason})" if containment.reason else ""
-            return _block(
-                f"VAIBot containment engaged{why} — every action on this account is blocked, on "
-                "every machine. Lift it from the dashboard or with `vaibot release`.",
-                "containment",
-            )
+        contained = read_containment()
+        if contained.contained:
+            return _block(containment_block_message(contained), "containment")
+
+        settings = Settings.from_env(self._env)
+        params = _jsonable(args)
 
         # Rung 1 — no key.
         creds = self._resolve(self._env)
@@ -321,7 +330,10 @@ class Engine:
                 logger.info("vaibot [observe]: %s would be %s — %s", tool_name, verdict, reason)
             if verdict == "deny" and decision.floor:
                 return _block(f"VAIBot blocked (catastrophic floor, enforced even in observe) — {reason}", "observe", run_id)
-            return _allow("observe", run_id)
+            if verdict in ("allow", "approve", "deny"):
+                return _allow("observe", run_id)
+            # Not a verdict at all, so not something to observe — see _unusable.
+            return self._unusable(tool_name, params, settings, verdict, run_id)
 
         if verdict == "allow":
             return _allow("guard", run_id)
@@ -353,9 +365,26 @@ class Engine:
                     "guard", run_id,
                 )
             return _block(f"VAIBot blocked {tool_name} — {reason}", "guard", run_id)
-        if settings.fail_open:
-            return _allow("fail-open", run_id)
-        return _block(f"VAIBot: unrecognised guard decision {verdict!r} — {tool_name} blocked (fail-closed).", "guard", run_id)
+        return self._unusable(tool_name, params, settings, verdict, run_id)
+
+    def _unusable(
+        self, tool_name: str, params: Dict[str, Any], settings: Settings, verdict: Any, run_id: Optional[str]
+    ) -> Outcome:
+        """A reachable guard that answered something that is not a verdict.
+
+        It has decided nothing, so this is a degraded path rather than a decision
+        to respect. In enforce it fails closed, as it always has. Under observe or
+        FAIL_OPEN the guard's own classifier decides — which is what every other
+        degraded rung does, and what keeps the catastrophic floor in front of
+        garbage instead of letting it read as "nothing to see here".
+        """
+        logger.warning("vaibot: the guard returned an unusable decision %r for %s", verdict, tool_name)
+        if settings.lenient:
+            return self._local(tool_name, params, settings, self._classify(tool_name, params), "guard-error")
+        return _block(
+            f"VAIBot: unrecognised guard decision {verdict!r} — {tool_name} blocked (fail-closed).",
+            "guard", run_id,
+        )
 
     # ── escalation ──────────────────────────────────────────────────────────
 

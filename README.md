@@ -19,7 +19,7 @@ When the guard can't answer, the plugin degrades rather than bricking the agent.
 
 | Rung | Behaviour |
 |---|---|
-| **Containment engaged** | The account-wide stop. Checked before every rung below, and it is the one thing that holds in observe and under `VAIBOT_FAIL_OPEN`. Read from machine-wide state with no daemon, no network and no credentials, so it survives exactly the paths that never reach the guard. Governance tools stay exempt, so an operator can still lift it. |
+| **Containment engaged** | The account-wide stop. Checked before every rung below — before settings are even read, and again if governing a call fails unexpectedly — and it is the one thing that holds in observe and under `VAIBOT_FAIL_OPEN`. Read from machine-wide state with no daemon, no network and no credentials, so it survives exactly the paths that never reach the guard. Governance tools stay exempt, so an operator can still lift it. |
 | **No API key** | Provision one via `vaibot-guard bootstrap`. If that can't, govern locally: floor blocks, risky calls prompt, safe work runs. Retries after 5 min (1 h if the account exists and only `vaibot login` can help). |
 | **Breaker tripped** | 3 guard failures inside 10 s. Decide locally for 60 s without calling the guard: denylist blocks, classifier-safe passes, the rest blocks. State persists in `~/.vaibot/breaker-state/hermes.json`. |
 | **Guard down, fresh install** | No rendezvous lock yet, so non-catastrophic work runs while the daemon comes up. |
@@ -155,7 +155,7 @@ It never prints a credential: it says whether a key resolves and for which envir
 
 **A receipt never claims a person decided something they were never asked.** A call handed to Hermes' gate that comes back blocked is finalized `approval: "denied"`, `approvalScope: "prompt"` — without it the guard records an escalated run as approved. A call VAIBot refused *itself*, such as declining an auto-granted escalation, returns a `block` directive, so the gate never opens and no prompt fires: that finalizes as a plain policy deny. What still cannot be told apart is *which* of deny, timeout or gate error ended a real prompt — Hermes reports all three as a blocked tool call, and the receipt vocabulary has one state for "not granted", so nothing honest separates them yet.
 
-**Fail-closed where it counts.** Hermes runs a call whose hook raised, so an unexpected error while governing blocks the call (unless you chose observe or fail-open). A reachable guard returning an unusable verdict yields `deny`. A 4xx is a real answer, not an outage, so it never trips the breaker. Bookkeeping failures degrade to "no receipt" and never reach tool dispatch.
+**Fail-closed where it counts.** Hermes runs a call whose hook raised, so an unexpected error while governing blocks the call (unless you chose observe or fail-open — and containment holds even then). A guard that is reachable and still gives no usable verdict has decided nothing: that blocks in enforce, and under observe or fail-open it falls to the classifier floor like any other degraded path, rather than reading as "nothing to see here". A 4xx is a real answer, not an outage, so it never trips the breaker. Bookkeeping failures degrade to "no receipt" and never reach tool dispatch.
 
 ## Tests
 
