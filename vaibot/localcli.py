@@ -24,6 +24,7 @@ import subprocess
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
+from . import config
 from .vocab import classifier_tool_name
 
 CLASSIFY_TIMEOUT_S = 5.0
@@ -36,7 +37,9 @@ def guard_cli(env: Optional[Mapping[str, str]] = None) -> Optional[List[str]]:
     ``VAIBOT_GUARD_CLI`` names it explicitly (a ``.mjs``/``.js`` path runs under
     node); otherwise ``vaibot-guard`` on PATH.
     """
-    e = os.environ if env is None else env
+    # Layered so ``guard_cli`` can also come from Hermes plugin config; PATH and
+    # every other name reads straight through.
+    e = config.layered(env)
     search_path = e.get("PATH")
     override = (e.get("VAIBOT_GUARD_CLI") or "").strip()
     if override:
@@ -48,7 +51,7 @@ def guard_cli(env: Optional[Mapping[str, str]] = None) -> Optional[List[str]]:
     return [found] if found else None
 
 
-def _run_json(
+def run_json(
     argv: Sequence[str],
     stdin: Optional[str],
     timeout_s: float,
@@ -102,7 +105,7 @@ def classify(
         payload = json.dumps({"toolName": classifier_tool_name(tool_name), "params": dict(params or {})})
     except (TypeError, ValueError):
         return None
-    data = _run_json([*cli, "classify"], payload, timeout_s, env)
+    data = run_json([*cli, "classify"], payload, timeout_s, env)
     if not data:
         return None
     hint = data.get("verdictHint")
@@ -143,7 +146,7 @@ def bootstrap(
     # Leave the CLI's own network timeout inside ours, so it reports a failure
     # rather than being cut off mid-write.
     inner_ms = max(1000, int((timeout_s - 3) * 1000))
-    data = _run_json([*cli, "bootstrap", "--agent", agent, "--timeout-ms", str(inner_ms)], None, timeout_s, env)
+    data = run_json([*cli, "bootstrap", "--agent", agent, "--timeout-ms", str(inner_ms)], None, timeout_s, env)
     if not data or data.get("ok") is not True or not isinstance(data.get("provisioned"), bool):
         return None
     reason = data.get("reason")

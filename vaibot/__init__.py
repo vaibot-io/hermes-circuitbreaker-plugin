@@ -35,12 +35,16 @@ import logging
 import threading
 from typing import Any, Dict, Optional
 
-from . import commands
+from . import cli, commands, config, launch
 from . import guard as guard_client
 from .creds import resolve_credentials
 from .engine import Engine, Settings
 
 logger = logging.getLogger("vaibot")
+
+#: Kept in step with ``plugin.yaml`` and read by the build as the package version,
+#: so the three can't drift (there is a test).
+__version__ = "0.2.0"
 
 #: Governance tools are exempt so a governance call can't recurse into governing
 #: itself. Hermes namespaces MCP tools as ``mcp__<server>__<tool>`` — the same
@@ -66,7 +70,9 @@ def _get_engine() -> Engine:
     global _engine
     with _engine_lock:
         if _engine is None:
-            _engine = Engine()
+            # The real launcher is passed in here and nowhere else: an Engine
+            # built any other way (every test) cannot start a daemon by omission.
+            _engine = Engine(ensure=launch.ensure_in_background)
         return _engine
 
 
@@ -190,12 +196,20 @@ def _on_post_tool_call(**kwargs: Any) -> None:
 
 def register(ctx: Any) -> None:
     """Entry point Hermes calls to load the plugin."""
+    # Settings first: everything below, and every decision after, reads them.
+    # A Hermes without the plugin-config API leaves the plugin on the environment
+    # alone, which is how it has always run.
+    config.from_ctx(ctx)
+
     ctx.register_hook("pre_tool_call", _on_pre_tool_call)
     ctx.register_hook("post_tool_call", _on_post_tool_call)
     # /vaibot — a status readout for the moment an agent has just been stopped.
     # Registered defensively: a Hermes without the slash-command API must still
     # load the plugin, because governance matters more than a readout.
     commands.register(ctx)
+    # `hermes vaibot status|guard` — the same answers from a terminal, for when
+    # there is no session to type into. Registered just as defensively.
+    cli.register(ctx)
 
     creds = resolve_credentials()
     if creds.key_mismatch:
@@ -204,3 +218,7 @@ def register(ctx: Any) -> None:
         )
     if guard_client.read_lock() is None:
         logger.info("vaibot: no local guard found yet — governing locally until one is running")
+    # Adopt the running guard, or bring one up, without holding up the session:
+    # a cold start pays a daemon boot, and plugin load is not the place to wait
+    # for it. Idempotent, so it costs one health probe when a guard is already up.
+    launch.ensure_in_background()

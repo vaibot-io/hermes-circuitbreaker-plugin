@@ -2,9 +2,77 @@ name: vaibot
 version: "0.2.0"
 description: "VAIBot governance — routes every tool call through the local VAIBot guard, blocks or escalates per policy, and writes signed, tamper-evident receipts. Degrades to the guard's own local floor when governance is unreachable."
 author: "Campbell Labs LLC"
-# No pip_dependencies: the plugin is standard-library only. It runs in-process
+license: MIT
+homepage: "https://www.vaibot.io"
+# No python_dependencies: the plugin is standard-library only. It runs in-process
 # inside the user's agent on a security path, so it adds no dependency surface.
 requires_env: []
-hooks:
+# `provides_hooks` is the key Hermes actually reads when it parses this manifest.
+provides_hooks:
   - pre_tool_call
   - post_tool_call
+# Plugin-scoped settings. Every one of these is also an environment variable, and
+# the variable wins — except `mode` and `fail_open`, the two that can only loosen
+# governance, where the stricter of the two sources wins so a pinned posture
+# cannot be undone from the environment the agent itself runs in. Credentials and
+# endpoints are deliberately absent: one machine has one VAIBot identity, resolved
+# by the shared credential store so every breaker on it agrees.
+config_schema:
+  mode:
+    type: str
+    default: enforce
+    choices: [enforce, observe]
+    env: VAIBOT_MODE
+    label: "Posture when no guard answers"
+    description: "observe records instead of blocking. A guard that answers overrides this with the account's own resolved mode, and the catastrophic floor blocks in every mode."
+  fail_open:
+    type: bool
+    default: false
+    env: VAIBOT_FAIL_OPEN
+    label: "Let guard errors through"
+    description: "Allows calls VAIBot could not get a verdict for. The catastrophic floor still blocks, and containment still holds."
+  timeout_ms:
+    type: int
+    default: 10000
+    env: VAIBOT_TIMEOUT_MS
+    label: "Guard decision timeout (ms)"
+    description: "How long to wait for the local guard to decide one tool call."
+  workspace:
+    type: str
+    env: VAIBOT_WORKSPACE
+    label: "Workspace directory"
+    description: "The workspace sent with each decision, and pinned on a guard this plugin starts. Defaults to the current directory."
+  guard_cli:
+    type: str
+    env: VAIBOT_GUARD_CLI
+    label: "Guard CLI path"
+    description: "The vaibot-guard executable used for offline classification and first-run provisioning. Defaults to vaibot-guard on PATH; a .mjs path runs under node."
+  auto_launch:
+    type: bool
+    default: true
+    env: VAIBOT_AUTO_LAUNCH
+    label: "Start a local guard when none is running"
+    description: "Adopts a running guard; starts one only when there is none. Never starts a second."
+  breaker_failure_threshold:
+    type: int
+    default: 3
+    env: VAIBOT_BREAKER_FAILURE_THRESHOLD
+    label: "Breaker failure threshold"
+    description: "Guard transport failures inside the window that trip the local circuit breaker."
+  breaker_window_ms:
+    type: int
+    default: 10000
+    env: VAIBOT_BREAKER_WINDOW_MS
+    label: "Breaker failure window (ms)"
+  breaker_cooldown_ms:
+    type: int
+    default: 60000
+    env: VAIBOT_BREAKER_COOLDOWN_MS
+    label: "Breaker cooldown (ms)"
+    description: "How long the breaker decides locally before handing back to the guard."
+  breaker_denylist:
+    type: list
+    default: []
+    env: VAIBOT_BREAKER_DENYLIST
+    label: "Tools always blocked while the breaker is tripped"
+    description: "No classifier verdict passes these while governance is offline."

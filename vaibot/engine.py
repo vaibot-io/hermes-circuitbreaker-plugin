@@ -38,6 +38,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Mapping, Optional
 
+from . import config
 from . import guard as guard_client
 from . import localcli
 from .breaker import BreakerStore, CircuitBreaker
@@ -67,14 +68,22 @@ class Settings:
 
     @classmethod
     def from_env(cls, env: Optional[Mapping[str, str]] = None) -> "Settings":
-        e = os.environ if env is None else env
+        """Environment first, then Hermes' plugin config, then the defaults.
+
+        ``mode`` and ``fail_open`` are the two settings that can only loosen
+        governance, so the stricter source wins rather than the nearer one; see
+        ``config`` for the whole rule. Everything else is plain precedence, which
+        is why it can read straight off the layered mapping.
+        """
+        raw = os.environ if env is None else env
+        e = config.layered(env)
         try:
             timeout_ms = float(e.get("VAIBOT_TIMEOUT_MS") or 0)
-        except ValueError:
+        except (TypeError, ValueError):
             timeout_ms = 0
         return cls(
-            mode="observe" if e.get("VAIBOT_MODE") == "observe" else "enforce",
-            fail_open=e.get("VAIBOT_FAIL_OPEN") == "true",
+            mode=config.resolve_mode(raw.get("VAIBOT_MODE")),
+            fail_open=config.resolve_fail_open(raw.get("VAIBOT_FAIL_OPEN")),
             timeout_s=timeout_ms / 1000.0 if timeout_ms > 0 else 10.0,
             workspace_dir=e.get("VAIBOT_WORKSPACE") or os.getcwd(),
         )
@@ -140,6 +149,18 @@ def _jsonable(args: Mapping[str, Any]) -> Dict[str, Any]:
         return {}
 
 
+def _no_ensure(*_args: Any, **_kwargs: Any) -> None:
+    """The default auto-launch dependency: do nothing.
+
+    Starting a machine-wide daemon is not something an ``Engine`` built in a test
+    should ever be able to do by omission, so the plugin's own wiring passes the
+    real launcher in explicitly (see ``vaibot.register``) and everything else gets
+    this. A footgun that defaults to "spawn a guard" would be one bad constructor
+    call away from a daemon on a developer's machine.
+    """
+    return None
+
+
 def _risk_label(risk: Any) -> str:
     if isinstance(risk, dict):
         return str(risk.get("risk") or "elevated")
@@ -164,6 +185,7 @@ class Engine:
         autogranted: Callable[[], bool] = approval_autogranted,
         breakers: Optional[BreakerStore] = None,
         clock: Callable[[], float] = time.monotonic,
+        ensure: Callable[..., Any] = _no_ensure,
     ):
         self._env = env
         self._resolve = resolve
@@ -176,6 +198,7 @@ class Engine:
         self._autogranted = autogranted
         self._breakers = breakers or BreakerStore(env)
         self._clock = clock
+        self._ensure = ensure
         self._bootstrap_lock = threading.Lock()
         self._bootstrap_retry_at = 0.0
 
@@ -227,6 +250,11 @@ class Engine:
         lock = self._read_lock(self._env)
         health = self._probe(lock) if lock is not None else None
         if health is None:
+            # Nothing is answering: ask for a guard to be brought up, on a
+            # background thread. This call is still decided by the ladder below —
+            # waiting on a cold start would put a daemon boot inside a tool call
+            # — but the next one finds a guard instead of the same outage.
+            self._ensure(self._env)
             self._record_failure(breaker, "guard unavailable")
             if breaker.is_tripped():
                 return self._tripped(breaker, tool_name, params, settings)
