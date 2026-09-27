@@ -11,7 +11,7 @@ The fifth circuit breaker, alongside the Claude Code, Codex, OpenClaw and Cursor
 | S0 | `vaibot-guard classify` — offline floor for non-Node hosts | ✅ done |
 | S1 | Skeleton + provenance: hooks → guard → signed receipts | ✅ done |
 | **S2** | **Enforcement: verdict → directive, degrade ladder, breaker, provisioning** | ✅ **this build** |
-| S3 | Approval UX: rule-scoped `[a]lways`, configurable bypass posture, `/vaibot` commands, approval observers | next |
+| S3 | Approval UX: rule-scoped `[a]lways`, configurable bypass posture, `/vaibot` commands, approval observers | 🟡 first two done |
 | S4 | Packaging, config schema, guard auto-launch | |
 | S5 | Hardening + cross-plugin parity tests | |
 
@@ -41,8 +41,8 @@ When the guard can't answer, the plugin degrades rather than bricking the agent.
 ### Deliberate departures from the Claude Code plugin
 
 - **The floor holds in every mode on degraded paths.** Claude Code lets a keyless or guard-down call through untouched under observe or `VAIBOT_FAIL_OPEN`; here a classifier `deny` still blocks, as it already does online.
-- **An escalation Hermes would grant automatically becomes a block.** Under `--yolo`, `/yolo`, or `approvals.cron_mode: approve`, Hermes approves plugin escalations before anyone sees a prompt. VAIBot refuses that by default; making it configurable per policy is S3. If Hermes' approval internals can't be read, the plugin assumes a bypass is active: failing to detect one must cost a prompt, never an ungoverned action.
-- **`[a]lways` is scoped to the exact call** (tool + arguments), so it can't blanket other actions. S3 widens it to the policy rule that fired.
+- **An escalation Hermes would grant automatically is refused unless policy says otherwise.** Under `--yolo`, `/yolo`, or `approvals.cron_mode: approve`, Hermes approves plugin escalations before anyone sees a prompt. The plugin reports that posture on each decision and the guard applies the account's `hostBypassAction`: `deny` (the default) blocks and mints no approval, `approve` hands it to Hermes' prompt and records the receipt as `bypassed`, never `approved`. Reporting rather than deciding is deliberate — loosening a bypass takes a verified signed bundle, which a plugin cannot mint. Every degraded rung keeps refusing, because no guard answered there and so no policy authorised anything. If Hermes' approval internals can't be read, the plugin assumes a bypass is active: failing to detect one must cost a prompt, never an ungoverned action.
+- **`[a]lways` is scoped to the policy rule that fired**, so one answer covers what the human was asked about ("writes outside the workspace") rather than one exact path — and still can't blanket a tool, since a different rule on the same tool asks again. Against a guard that names no rule it falls back to the exact call (tool + arguments), which under-grants rather than over-grants.
 
 ## Install
 
@@ -89,7 +89,7 @@ python3 -m unittest discover -s tests
 VAIBOT_GUARD_SRC=/path/to/vaibot-guard python3 -m unittest discover -s tests   # + real-CLI floor tests
 ```
 
-140 tests, no dependencies. Some are cross-language and run only when node and a guard checkout are available; each skips cleanly otherwise:
+156 tests, no dependencies. Some are cross-language and run only when node and a guard checkout are available; each skips cleanly otherwise:
 
 - credential resolution against the Node `creds.mjs`
 - every rename target against the guard's released classifier

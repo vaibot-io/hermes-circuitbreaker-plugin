@@ -106,13 +106,23 @@ def _block(message: str, rung: str, run_id: Optional[str] = None, escalated: boo
     return Outcome({"action": "block", "message": message}, rung, run_id, escalated)
 
 
-def rule_key(tool_name: str, args: Mapping[str, Any]) -> str:
+def rule_key(tool_name: str, args: Mapping[str, Any], rule_id: Optional[str] = None) -> str:
     """Allowlist grain for Hermes' ``[s]ession`` / ``[a]lways`` answers.
 
-    Scoped to this exact call (tool + arguments), so answering ``[a]lways`` can
-    never pre-approve a different action. S3 widens it to the policy rule that
-    fired, which is the grain the plan settles on.
+    With a ``rule_id`` — the policy rule the guard says fired — the grain is that
+    rule, so answering ``[a]lways`` covers the thing the human was actually asked
+    about: "writes outside the workspace", not "this one file". That is both more
+    useful and narrower than the alternatives, because it still cannot blanket a
+    whole tool: a different rule on the same tool asks again.
+
+    Without one — a guard predating ``rule-id``, or a verdict carrying no rule —
+    it falls back to this exact call (tool + arguments). That never over-grants,
+    but it does under-grant: the same escalation re-asks on any argument change.
+    Falling back is deliberate; inventing a broader key from a guard that did not
+    name a rule would widen a grant on a guess.
     """
+    if rule_id:
+        return f"vaibot:rule:{rule_id}"
     try:
         canonical = json.dumps(args, sort_keys=True, separators=(",", ":"), default=str)
     except (TypeError, ValueError):
@@ -225,12 +235,21 @@ class Engine:
             return self._guard_down(tool_name, params, settings, lock)
 
         # Rung 4 — ask the guard.
+        #
+        # Report the host's approval-bypass posture when the guard understands it,
+        # and let the guard apply the policy's hostBypassAction. Reporting beats
+        # enforcing: loosening a bypass to "approve" requires a verified signed
+        # bundle, which this plugin cannot mint, so the decision belongs there. A
+        # guard without the capability gets no field and keeps the old behaviour,
+        # where this plugin refuses an auto-granted escalation itself.
+        speaks_bypass = "host-bypass" in health.capabilities
         decision, resp = self._decide(
             lock,
             session_id=session_id or "hermes",
             tool_name=guard_tool_name(tool_name, health.capabilities),
             params=params,
             workspace_dir=settings.workspace_dir,
+            host_bypass=(self._autogranted(), "hermes:auto-approve") if speaks_bypass else None,
             timeout_s=settings.timeout_s,
         )
         if decision is None:
@@ -279,8 +298,32 @@ class Engine:
         if verdict == "allow":
             return _allow("guard", run_id)
         if verdict == "approve":
-            return self._escalate(tool_name, params, reason, _risk_label(decision.risk), "guard", run_id, escalated=True)
+            # Policy said the host may grant this itself (hostBypassAction:
+            # approve). Hand it to Hermes' prompt, which its bypass will satisfy
+            # without asking. The receipt records `bypassed`, never `approved`, so
+            # provenance never claims a human decided — which is why this is safe
+            # to honour and why the guard, not this plugin, gets to say so.
+            if decision.bypass_override:
+                return self._escalate(
+                    tool_name, params, reason, _risk_label(decision.risk), "guard", run_id,
+                    escalated=True, rule_id=decision.rule_id, allow_autogrant=True,
+                )
+            return self._escalate(
+                tool_name, params, reason, _risk_label(decision.risk), "guard", run_id,
+                escalated=True, rule_id=decision.rule_id,
+            )
         if verdict == "deny":
+            # Policy refused the escalation because the host's approvals are off
+            # (hostBypassAction: deny, the default). Say which it was, so the
+            # operator knows to turn the bypass off rather than hunting a policy.
+            if decision.bypass_blocked:
+                return _block(
+                    f"VAIBot blocked {tool_name} — {reason}. Hermes is set to approve automatically "
+                    "(--yolo, /yolo, or approvals.cron_mode: approve), and this account's policy does not "
+                    "accept an automatic approval for an escalated action. Turn automatic approval off to "
+                    "be asked instead.",
+                    "guard", run_id,
+                )
             return _block(f"VAIBot blocked {tool_name} — {reason}", "guard", run_id)
         if settings.fail_open:
             return _allow("fail-open", run_id)
@@ -299,8 +342,15 @@ class Engine:
         *,
         escalated: bool = False,
         note: str = "",
+        rule_id: Optional[str] = None,
+        allow_autogrant: bool = False,
     ) -> Outcome:
-        if self._autogranted():
+        # `allow_autogrant` is set only when the guard resolved the account's
+        # policy to hostBypassAction: approve for this call. Everywhere else the
+        # refusal stands, including every degraded rung — those never reached a
+        # guard, so no policy authorised a bypass and assuming one would let a
+        # host switch off the part of governance that asks a human.
+        if self._autogranted() and not allow_autogrant:
             return _block(
                 f"VAIBot: this {tool_name} call needs a human decision ({reason}), but Hermes is set to approve "
                 "automatically (--yolo, /yolo, or approvals.cron_mode: approve). VAIBot doesn't accept automatic "
@@ -311,7 +361,7 @@ class Engine:
             {
                 "action": "approve",
                 "message": f"VAIBot flagged this {tool_name} call as {risk} risk — {reason}.{note}",
-                "rule_key": rule_key(tool_name, params),
+                "rule_key": rule_key(tool_name, params, rule_id),
             },
             rung,
             run_id,
