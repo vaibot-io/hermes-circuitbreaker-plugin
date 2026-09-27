@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import vaibot  # noqa: E402
 from vaibot import guard as guard_client  # noqa: E402
+from vaibot import launch  # noqa: E402
 from vaibot.engine import Outcome  # noqa: E402
 
 logging.getLogger("vaibot").addHandler(logging.NullHandler())
@@ -179,15 +180,44 @@ class PostToolCallTests(HookCase):
 
 
 class RegisterTests(unittest.TestCase):
-    def test_registers_both_hooks(self):
-        ctx = mock.Mock()
+    """Loading the plugin. The launcher is patched out on purpose: registering
+    asks for a guard to be brought up, and a test must not put a daemon on the
+    machine running it."""
+
+    def register(self, ctx):
         with mock.patch.object(vaibot, "resolve_credentials") as rc, \
-             mock.patch.object(guard_client, "read_lock", return_value=LOCK):
+             mock.patch.object(guard_client, "read_lock", return_value=LOCK), \
+             mock.patch.object(launch, "ensure_in_background") as ensure:
             rc.return_value.key_mismatch = False
             vaibot.register(ctx)
+        return ensure
+
+    def test_registers_both_hooks(self):
+        ctx = mock.Mock()
+        self.register(ctx)
         registered = {c.args[0]: c.args[1] for c in ctx.register_hook.call_args_list}
         self.assertIs(registered["pre_tool_call"], vaibot._on_pre_tool_call)
         self.assertIs(registered["post_tool_call"], vaibot._on_post_tool_call)
+
+    def test_loading_asks_for_a_guard_without_waiting_for_one(self):
+        # Plugin load is not the place to wait on a daemon boot, and the first
+        # tool call should not be the thing that discovers there is no guard.
+        ensure = self.register(mock.Mock())
+        ensure.assert_called_once_with()
+
+    def test_settings_are_wired_before_anything_reads_them(self):
+        seen = []
+
+        class Ctx(mock.Mock):
+            def get_config(self, key, default=None):
+                seen.append(key)
+                return default
+
+        ctx = Ctx()
+        self.register(ctx)
+        from vaibot import config
+        self.addCleanup(config.clear_provider)
+        self.assertIsNotNone(config.provider(), "the host's plugin config should be in use")
 
 
 if __name__ == "__main__":

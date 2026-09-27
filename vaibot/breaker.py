@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
+from . import config
 from .creds import creds_dir
 
 DEFAULT_FAILURE_THRESHOLD = 3
@@ -61,7 +62,9 @@ class BreakerConfig:
 
     @classmethod
     def from_env(cls, env: Optional[Mapping[str, str]] = None) -> "BreakerConfig":
-        e = os.environ if env is None else env
+        # Layered so the same four knobs can be set as Hermes plugin config;
+        # the environment still wins. See ``config`` for the precedence.
+        e = config.layered(env)
         raw_deny = e.get("VAIBOT_BREAKER_DENYLIST") or ""
         return cls(
             failure_threshold=_positive(e.get("VAIBOT_BREAKER_FAILURE_THRESHOLD"), DEFAULT_FAILURE_THRESHOLD),
