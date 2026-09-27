@@ -11,11 +11,13 @@ The fifth circuit breaker, alongside the Claude Code, Codex, OpenClaw and Cursor
 | S0 | `vaibot-guard classify` — offline floor for non-Node hosts | ✅ done |
 | S1 | Skeleton + provenance: hooks → guard → signed receipts | ✅ done |
 | **S2** | **Enforcement: verdict → directive, degrade ladder, breaker, provisioning** | ✅ **this build** |
-| S3 | Approval UX: rule-scoped `[a]lways`, configurable bypass posture, `/vaibot` commands, approval observers | 🟡 first two done |
+| S3 | Approval UX: rule-scoped `[a]lways`, policy-driven bypass posture, `/vaibot`, receipt fidelity | ✅ done |
 | S4 | Packaging, config schema, guard auto-launch | |
 | S5 | Hardening + cross-plugin parity tests | |
 
 Containment arrived outside this plan, with guard 2.2.0: it is honoured here as rung 0 of the ladder below, bringing Hermes to parity with the four published breakers.
+
+S3 shipped three of its four planned items and replaced the fourth. **Approval observers were dropped**: Hermes exposes no subscription API for approval decisions — its own docs say so — and the closest surface, `post_tool_call`, this plugin already uses. What that surface *can* support is receipt fidelity, so a receipt stops attributing a refusal to a reviewer who was never asked. That is what shipped instead.
 
 ## What it does
 
@@ -101,7 +103,9 @@ It never prints a credential: it says whether a key resolves and for which envir
 
 **Shared identity.** Reads the same `~/.vaibot/credentials.json` (v3, env-namespaced) as the Node plugins, with the same resolution precedence, the same *lenient* key-prefix guard, and the same production URL-override gate: `VAIBOT_GOVERNANCE_URL` is ignored for production unless `VAIBOT_ALLOW_URL_OVERRIDE` is set. A cross-language test resolves the same fixtures through the Node original and this port and requires identical answers.
 
-**Receipts close synchronously.** Hermes hooks run in-process, so run state is a dict rather than `/tmp` files claimed by unlinking. And `post_tool_call` fires even for blocked calls, including a declined approval prompt, so every decision closes its own receipt. A declined escalation is finalized with `approval: "denied"`; without it the guard would record the run as approved.
+**Receipts close synchronously.** Hermes hooks run in-process, so run state is a dict rather than `/tmp` files claimed by unlinking. And `post_tool_call` fires even for blocked calls, including a declined approval prompt, so every decision closes its own receipt.
+
+**A receipt never claims a person decided something they were never asked.** A call handed to Hermes' gate that comes back blocked is finalized `approval: "denied"`, `approvalScope: "prompt"` — without it the guard records an escalated run as approved. A call VAIBot refused *itself*, such as declining an auto-granted escalation, returns a `block` directive, so the gate never opens and no prompt fires: that finalizes as a plain policy deny. What still cannot be told apart is *which* of deny, timeout or gate error ended a real prompt — Hermes reports all three as a blocked tool call, and the receipt vocabulary has one state for "not granted", so nothing honest separates them yet.
 
 **Fail-closed where it counts.** Hermes runs a call whose hook raised, so an unexpected error while governing blocks the call (unless you chose observe or fail-open). A reachable guard returning an unusable verdict yields `deny`. A 4xx is a real answer, not an outage, so it never trips the breaker. Bookkeeping failures degrade to "no receipt" and never reach tool dispatch.
 
@@ -112,7 +116,7 @@ python3 -m unittest discover -s tests
 VAIBOT_GUARD_SRC=/path/to/vaibot-guard python3 -m unittest discover -s tests   # + real-CLI floor tests
 ```
 
-156 tests, no dependencies. Some are cross-language and run only when node and a guard checkout are available; each skips cleanly otherwise:
+No dependencies to install. Some tests are cross-language and run only when node and a guard checkout are available; each skips cleanly otherwise:
 
 - credential resolution against the Node `creds.mjs`
 - every rename target against the guard's released classifier

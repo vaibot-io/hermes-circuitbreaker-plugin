@@ -56,7 +56,17 @@ class PreToolCallTests(HookCase):
         self.use(FakeEngine(Outcome(directive, "guard", "run_9", escalated=True)))
         out = vaibot._on_pre_tool_call(tool_name="terminal", args={"command": "x"}, tool_call_id="tc1", session_id="s")
         self.assertEqual(out, directive)
-        self.assertEqual(vaibot._runs["tc1"], {"run_id": "run_9", "escalated": True})
+        # gate_asked because the directive is an `approve`: Hermes will open its
+        # prompt. A refusal would carry escalated=True with a `block` directive.
+        self.assertEqual(vaibot._runs["tc1"],
+                         {"run_id": "run_9", "escalated": True, "gate_asked": True})
+
+    def test_a_refusal_is_remembered_as_never_reaching_the_gate(self):
+        refusal = {"action": "block", "message": "VAIBot doesn't accept automatic approval"}
+        self.use(FakeEngine(Outcome(refusal, "guard", "run_10", escalated=True)))
+        vaibot._on_pre_tool_call(tool_name="terminal", args={"command": "x"}, tool_call_id="tc9", session_id="s")
+        self.assertEqual(vaibot._runs["tc9"],
+                         {"run_id": "run_10", "escalated": True, "gate_asked": False})
 
     def test_governance_tools_are_never_governed(self):
         engine = self.use(FakeEngine())
@@ -91,23 +101,40 @@ class PreToolCallTests(HookCase):
 
 
 class FinalizeMappingTests(unittest.TestCase):
-    def test_declined_escalation_is_recorded_as_denied(self):
-        self.assertEqual(vaibot._finalize_fields({"escalated": True}, "blocked"), ("denied_by_reviewer", "denied"))
+    def test_a_prompt_that_refused_is_recorded_as_denied(self):
+        # The gate was opened and came back blocked: denied, timed out, or the gate
+        # errored — all three fail closed. scope="prompt" records that someone was
+        # actually asked.
+        self.assertEqual(
+            vaibot._finalize_fields({"escalated": True, "gate_asked": True}, "blocked"),
+            ("denied_by_reviewer", "denied", "prompt"),
+        )
+
+    def test_our_own_refusal_is_NOT_a_reviewer_denial(self):
+        # Refusing an auto-granted escalation returns a block directive, so Hermes
+        # never opens the gate. Recording that as denied_by_reviewer would put a
+        # decision in a person's mouth that they were never offered.
+        self.assertEqual(
+            vaibot._finalize_fields({"escalated": True, "gate_asked": False}, "blocked"),
+            ("blocked", None, None),
+        )
 
     def test_granted_escalation_is_recorded_as_run(self):
-        self.assertEqual(vaibot._finalize_fields({"escalated": True}, "ok"), ("allowed", None))
+        self.assertEqual(vaibot._finalize_fields({"escalated": True, "gate_asked": True}, "ok"),
+                         ("allowed", None, None))
         # Approved, ran, and failed: it ran, so no denial.
-        self.assertEqual(vaibot._finalize_fields({"escalated": True}, "error"), ("blocked", None))
+        self.assertEqual(vaibot._finalize_fields({"escalated": True, "gate_asked": True}, "error"),
+                         ("blocked", None, None))
 
     def test_ordinary_calls(self):
-        self.assertEqual(vaibot._finalize_fields({"escalated": False}, "ok"), ("allowed", None))
-        self.assertEqual(vaibot._finalize_fields({"escalated": False}, "blocked"), ("blocked", None))
-        self.assertEqual(vaibot._finalize_fields({}, "error"), ("blocked", None))
+        self.assertEqual(vaibot._finalize_fields({"escalated": False}, "ok"), ("allowed", None, None))
+        self.assertEqual(vaibot._finalize_fields({"escalated": False}, "blocked"), ("blocked", None, None))
+        self.assertEqual(vaibot._finalize_fields({}, "error"), ("blocked", None, None))
 
 
 class PostToolCallTests(HookCase):
     def test_finalizes_the_remembered_run(self):
-        vaibot._runs["tc1"] = {"run_id": "run_1", "escalated": True}
+        vaibot._runs["tc1"] = {"run_id": "run_1", "escalated": True, "gate_asked": True}
         with mock.patch.object(guard_client, "read_lock", return_value=LOCK), \
              mock.patch.object(guard_client, "finalize_tool",
                                return_value=guard_client.GuardResponse(ok=True)) as fin:
@@ -116,8 +143,21 @@ class PostToolCallTests(HookCase):
         kwargs = fin.call_args.kwargs
         self.assertEqual((kwargs["run_id"], kwargs["outcome"], kwargs["approval"]),
                          ("run_1", "denied_by_reviewer", "denied"))
+        self.assertEqual(kwargs["approval_scope"], "prompt", "a prompt actually fired")
         self.assertEqual(kwargs["error"], "BLOCKED: denied by user")
         self.assertEqual(vaibot._runs, {}, "the entry is consumed")
+
+    def test_our_own_refusal_finalizes_without_claiming_a_reviewer(self):
+        vaibot._runs["tc2"] = {"run_id": "run_2", "escalated": True, "gate_asked": False}
+        with mock.patch.object(guard_client, "read_lock", return_value=LOCK), \
+             mock.patch.object(guard_client, "finalize_tool",
+                               return_value=guard_client.GuardResponse(ok=True)) as fin:
+            vaibot._on_post_tool_call(tool_name="terminal", tool_call_id="tc2", session_id="s",
+                                      status="blocked", error_message="VAIBot: needs a human decision", duration_ms=1)
+        kwargs = fin.call_args.kwargs
+        self.assertEqual(kwargs["outcome"], "blocked")
+        self.assertIsNone(kwargs["approval"], "nobody was asked, so nobody denied it")
+        self.assertIsNone(kwargs["approval_scope"])
 
     def test_nothing_to_finalize_without_a_run(self):
         with mock.patch.object(guard_client, "finalize_tool") as fin:
