@@ -89,7 +89,7 @@ python3 -m unittest discover -s tests
 VAIBOT_GUARD_SRC=/path/to/vaibot-guard python3 -m unittest discover -s tests   # + real-CLI floor tests
 ```
 
-125 tests, no dependencies. Some are cross-language and run only when node and a guard checkout are available; each skips cleanly otherwise:
+140 tests, no dependencies. Some are cross-language and run only when node and a guard checkout are available; each skips cleanly otherwise:
 
 - credential resolution against the Node `creds.mjs`
 - every rename target against the guard's released classifier
