@@ -41,6 +41,7 @@ from typing import Any, Callable, Dict, Mapping, Optional
 from . import guard as guard_client
 from . import localcli
 from .breaker import BreakerStore, CircuitBreaker
+from .containment import read_containment
 from .creds import ResolvedCredentials, creds_path, resolve_credentials
 from .hostbypass import approval_autogranted
 from .vocab import guard_tool_name
@@ -177,6 +178,26 @@ class Engine:
     def decide(self, tool_name: str, args: Mapping[str, Any], session_id: str = "") -> Outcome:
         settings = Settings.from_env(self._env)
         params = _jsonable(args)
+
+        # Rung 0 — containment: the account-wide stop, ahead of every rung below.
+        #
+        # Each rung underneath can let a call through: no key governs locally,
+        # a tripped breaker decides locally, guard-down degrades, and observe or
+        # FAIL_OPEN allow outright. Those are precisely the paths containment has
+        # to survive, so it cannot sit anywhere but first. It also ignores
+        # `settings.lenient` — observe does not lift containment, which is the one
+        # place this plugin overrides observe mode's "never block" rule.
+        #
+        # Governance tools are already exempt before decide() is reached (see
+        # _should_skip), so an operator can still look at the account and lift it.
+        containment = read_containment()
+        if containment.contained:
+            why = f" ({containment.reason})" if containment.reason else ""
+            return _block(
+                f"VAIBot containment engaged{why} — every action on this account is blocked, on "
+                "every machine. Lift it from the dashboard or with `vaibot release`.",
+                "containment",
+            )
 
         # Rung 1 — no key.
         creds = self._resolve(self._env)

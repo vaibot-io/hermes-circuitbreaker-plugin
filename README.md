@@ -15,6 +15,8 @@ The fifth circuit breaker, alongside the Claude Code, Codex, OpenClaw and Cursor
 | S4 | Packaging, config schema, guard auto-launch | |
 | S5 | Hardening + cross-plugin parity tests | |
 
+Containment arrived outside this plan, with guard 2.2.0: it is honoured here as rung 0 of the ladder below, bringing Hermes to parity with the four published breakers.
+
 ## What it does
 
 | Guard verdict | Hermes directive |
@@ -30,6 +32,7 @@ When the guard can't answer, the plugin degrades rather than bricking the agent.
 
 | Rung | Behaviour |
 |---|---|
+| **Containment engaged** | The account-wide stop. Checked before every rung below, and it is the one thing that holds in observe and under `VAIBOT_FAIL_OPEN`. Read from machine-wide state with no daemon, no network and no credentials, so it survives exactly the paths that never reach the guard. Governance tools stay exempt, so an operator can still lift it. |
 | **No API key** | Provision one via `vaibot-guard bootstrap`. If that can't, govern locally: floor blocks, risky calls prompt, safe work runs. Retries after 5 min (1 h if the account exists and only `vaibot login` can help). |
 | **Breaker tripped** | 3 guard failures inside 10 s. Decide locally for 60 s without calling the guard: denylist blocks, classifier-safe passes, the rest blocks. State persists in `~/.vaibot/breaker-state/hermes.json`. |
 | **Guard down, fresh install** | No rendezvous lock yet, so non-catastrophic work runs while the daemon comes up. |
@@ -86,7 +89,7 @@ python3 -m unittest discover -s tests
 VAIBOT_GUARD_SRC=/path/to/vaibot-guard python3 -m unittest discover -s tests   # + real-CLI floor tests
 ```
 
-125 tests, no dependencies. Some are cross-language and run only when node and a guard checkout are available; each skips cleanly otherwise:
+140 tests, no dependencies. Some are cross-language and run only when node and a guard checkout are available; each skips cleanly otherwise:
 
 - credential resolution against the Node `creds.mjs`
 - every rename target against the guard's released classifier
