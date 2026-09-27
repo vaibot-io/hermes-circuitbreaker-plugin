@@ -1,23 +1,8 @@
-# @vaibot/hermes-circuitbreaker-plugin
+# VAIBot Governance Plugin for Hermes
 
 VAIBot governance for [Hermes](https://github.com/NousResearch/hermes-agent). Routes every tool call through the local `@vaibot/guard`, blocks or escalates it per policy, and writes signed, tamper-evident receipts.
 
-The fifth circuit breaker, alongside the Claude Code, Codex, OpenClaw and Cursor plugins. They share one guard, one credential store and one signed policy.
-
-## Status — S2 (enforcement + degrade ladder)
-
-| Sprint | Scope | State |
-|---|---|---|
-| S0 | `vaibot-guard classify` — offline floor for non-Node hosts | ✅ done |
-| S1 | Skeleton + provenance: hooks → guard → signed receipts | ✅ done |
-| **S2** | **Enforcement: verdict → directive, degrade ladder, breaker, provisioning** | ✅ **this build** |
-| S3 | Approval UX: rule-scoped `[a]lways`, policy-driven bypass posture, `/vaibot`, receipt fidelity | ✅ done |
-| S4 | Packaging, config schema, guard auto-launch | |
-| S5 | Hardening + cross-plugin parity tests | |
-
-Containment arrived outside this plan, with guard 2.2.0: it is honoured here as rung 0 of the ladder below, bringing Hermes to parity with the four published breakers.
-
-S3 shipped three of its four planned items and replaced the fourth. **Approval observers were dropped**: Hermes exposes no subscription API for approval decisions — its own docs say so — and the closest surface, `post_tool_call`, this plugin already uses. What that surface *can* support is receipt fidelity, so a receipt stops attributing a refusal to a reviewer who was never asked. That is what shipped instead.
+One of the VAIBot circuit breakers, alongside the Claude Code, Codex, OpenClaw and Cursor plugins. They share one guard, one credential store and one signed policy, so an account's rules apply the same way whichever agent you run.
 
 ## What it does
 
@@ -40,9 +25,9 @@ When the guard can't answer, the plugin degrades rather than bricking the agent.
 | **Guard down, fresh install** | No rendezvous lock yet, so non-catastrophic work runs while the daemon comes up. |
 | **Guard down, established install** | The lock exists but nothing answers. That looks the same as tampering, so the call is governed locally and flagged loudly. |
 
-### Deliberate departures from the Claude Code plugin
+### Approvals, and what still blocks
 
-- **The floor holds in every mode on degraded paths.** Claude Code lets a keyless or guard-down call through untouched under observe or `VAIBOT_FAIL_OPEN`; here a classifier `deny` still blocks, as it already does online.
+- **The floor holds in every mode.** On a degraded path a classifier `deny` still blocks, even under observe or `VAIBOT_FAIL_OPEN`. Those settings change whether you are asked, never whether a catastrophic action can run.
 - **An escalation Hermes would grant automatically is refused unless policy says otherwise.** Under `--yolo`, `/yolo`, or `approvals.cron_mode: approve`, Hermes approves plugin escalations before anyone sees a prompt. The plugin reports that posture on each decision and the guard applies the account's `hostBypassAction`: `deny` (the default) blocks and mints no approval, `approve` hands it to Hermes' prompt and records the receipt as `bypassed`, never `approved`. Reporting rather than deciding is deliberate — loosening a bypass takes a verified signed bundle, which a plugin cannot mint. Every degraded rung keeps refusing, because no guard answered there and so no policy authorised anything. If Hermes' approval internals can't be read, the plugin assumes a bypass is active: failing to detect one must cost a prompt, never an ungoverned action.
 - **`[a]lways` is scoped to the policy rule that fired**, so one answer covers what the human was asked about ("writes outside the workspace") rather than one exact path — and still can't blanket a tool, since a different rule on the same tool asks again. Against a guard that names no rule it falls back to the exact call (tool + arguments), which under-grants rather than over-grants.
 
