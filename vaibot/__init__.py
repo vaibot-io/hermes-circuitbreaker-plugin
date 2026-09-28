@@ -101,7 +101,17 @@ def _take(tool_call_id: str) -> Optional[Dict[str, Any]]:
 
 
 def _should_skip(tool_name: str) -> bool:
-    return not tool_name or tool_name == _SELF_PREFIX or tool_name.startswith(_SELF_NAMESPACE)
+    """Only VAIBot's own governance tools are exempt from governance.
+
+    A blank or missing tool name is deliberately NOT exempt. It used to be, which
+    made "the host did not tell us what this is" the one input that bought an
+    ungoverned call — and because this runs ahead of :func:`Engine.decide`, it ran
+    ahead of the account-wide containment stop too. A call nobody can name is
+    exactly the kind that has to be caught: containment blocks it like anything
+    else, and if the account is not contained the guard's classifier has no rule
+    for an unknown tool, so it asks. Neither outcome needs a name.
+    """
+    return tool_name == _SELF_PREFIX or tool_name.startswith(_SELF_NAMESPACE)
 
 
 def _on_pre_tool_call(**kwargs: Any) -> Optional[Dict[str, Any]]:
