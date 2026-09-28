@@ -1,0 +1,181 @@
+# Publish vaibot-hermes-circuitbreaker to PyPI via Trusted Publishing (OIDC).
+#
+# There is no API token anywhere in this workflow, and none in the repository's
+# secrets. PyPI verifies a short-lived OIDC identity token minted by GitHub for this
+# exact repository, workflow file and environment, so there is no long-lived
+# credential to leak, rotate or misplace. For a plugin whose entire job is to stop an
+# agent doing something irreversible, a publishing secret sitting in CI would be the
+# wrong shape.
+#
+# ── Register this at https://pypi.org/manage/account/publishing/ ──────────────
+# The project does not exist on PyPI yet, so add it as a PENDING publisher:
+#
+#   PyPI Project Name:  vaibot-hermes-circuitbreaker
+#   Owner:              vaibot-io
+#   Repository name:    hermes-circuitbreaker-plugin
+#   Workflow name:      publish.yml
+#   Environment name:   pypi
+#
+# All five must match exactly or the publish is rejected — that strictness is the
+# point. Renaming this file, or the environment, breaks publishing until PyPI is
+# updated to match.
+#
+# ── How a release happens ────────────────────────────────────────────────────
+#   1. Bump __version__ in vaibot/__init__.py (the single source; pyproject reads it
+#      via [tool.hatch.version] and plugin.yaml is asserted against it by the tests).
+#   2. Tag and publish a GitHub Release named v<version>, e.g. v0.2.0.
+#   3. This workflow tests, builds, verifies the tag matches the package version, and
+#      publishes.
+#
+# `workflow_dispatch` exists for the FIRST publish, before any release exists, and
+# for re-running a failed upload. It still refuses a version already on PyPI, because
+# PyPI does.
+
+name: publish
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and check only — do not upload to PyPI"
+        type: boolean
+        default: true
+
+# Least privilege by default. The publish job raises `id-token` for itself alone.
+permissions:
+  contents: read
+
+jobs:
+  # ── The gate. A plugin that governs other software should not ship untested. ──
+  test:
+    name: test (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Matches requires-python = ">=3.10" and the declared classifiers.
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      # Zero runtime dependencies is a design property of this package, so there is
+      # nothing to install. If this step ever needs to install something, that is a
+      # signal worth stopping for rather than working around.
+      - name: Assert the dependency surface is still empty
+        run: |
+          python - <<'PY'
+          import re, sys, pathlib
+          src = pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
+          m = re.search(r"^dependencies\s*=\s*\[(.*?)\]", src, re.M | re.S)
+          assert m, "could not find [project].dependencies"
+          body = m.group(1).strip()
+          if body:
+              sys.exit(f"dependencies is no longer empty: {body!r}\n"
+                       "This package runs in-process inside someone else's agent on a "
+                       "security path. Adding a dependency is a deliberate decision, "
+                       "not a drive-by — update this check when you make it.")
+          print("dependency surface: empty, as designed")
+          PY
+
+      # HOME is redirected because the suite starts real guard daemons, and a daemon
+      # writes the singleton rendezvous file (~/.vaibot/guard/guard.json)
+      # unconditionally. Against a developer's real HOME that clobbers a live lock;
+      # in CI it would just be sloppy. Either way, isolate it.
+      - name: Run the suite with an isolated HOME
+        run: |
+          export HOME="$(mktemp -d)"
+          python -m unittest discover -s tests -v
+
+  build:
+    name: build sdist + wheel
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tooling
+        run: python -m pip install --upgrade build twine
+
+      - name: Build
+        run: python -m build
+
+      # `twine check` catches a README that PyPI will reject — worth knowing before
+      # the upload rather than after, because the version number is then spent.
+      - name: Check the distributions render on PyPI
+        run: python -m twine check dist/*
+
+      # The version is single-sourced from vaibot/__init__.py. On a release, the tag
+      # must agree with it, or we would publish something other than what the tag
+      # says — and a PyPI version can never be reused to correct it.
+      - name: Verify the tag matches the package version
+        if: github.event_name == 'release'
+        run: |
+          python - <<'PY'
+          import os, pathlib, re, sys
+          tag = os.environ["TAG"]
+          init = pathlib.Path("vaibot/__init__.py").read_text(encoding="utf-8")
+          m = re.search(r'^__version__\s*=\s*"([^"]+)"', init, re.M)
+          assert m, "no __version__ in vaibot/__init__.py"
+          version = m.group(1)
+          expected = f"v{version}"
+          if tag != expected:
+              sys.exit(f"tag {tag!r} does not match package version {version!r} "
+                       f"(expected {expected!r}). Fix the tag or the version — a PyPI "
+                       f"version number cannot be reused once spent.")
+          print(f"tag {tag} matches version {version}")
+          PY
+        env:
+          TAG: ${{ github.ref_name }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: publish to PyPI
+    needs: build
+    # Skip on a dry-run dispatch; always publish for a real release.
+    if: github.event_name == 'release' || inputs.dry_run == false
+    runs-on: ubuntu-latest
+
+    # The environment name is part of what PyPI verifies, and it is also where to put
+    # a required-reviewer rule so a publish needs a human even when a workflow can
+    # start itself.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/vaibot-hermes-circuitbreaker
+
+    permissions:
+      # The only privilege this job has, and the only one Trusted Publishing needs:
+      # mint a short-lived OIDC token for PyPI to verify. No `contents: write`, no
+      # secrets, no token.
+      id-token: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish
+        # PyPA's own action. `release/v1` is the tag they maintain and document; to
+        # harden further, pin it to a commit SHA and bump deliberately — worth doing
+        # if you would rather review each change to the thing that holds the OIDC
+        # token than inherit it.
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # PEP 740 attestations: signed provenance linking the uploaded artifact back
+          # to this workflow run. Apt for a package whose product is provenance.
+          attestations: true
