@@ -1,0 +1,22 @@
+{
+  "_comment": [
+    "The PyPI artifact this wrapper installs, pinned by digest.",
+    "",
+    "PyPI is the single source of truth: this package carries no copy of the plugin,",
+    "only the coordinates of one and the hash it must have. That is deliberate — a",
+    "second complete copy in a second registry is how eight vendored guard versions",
+    "ended up spanning 1.0.2 to 2.1.0. Fetch-and-verify makes drift impossible rather",
+    "than a discipline someone has to keep.",
+    "",
+    "`sha256` is the anchor. It is fixed when this npm package is published, so it does",
+    "not matter whether the registry that serves the wheel later reports something",
+    "different — a mismatch is a hard failure, not a warning."
+  ],
+  "pypiProject": "vaibot-hermes-circuitbreaker",
+  "version": "0.2.0",
+  "filename": "vaibot_hermes_circuitbreaker-0.2.0-py3-none-any.whl",
+  "url": "https://files.pythonhosted.org/packages/d9/df/35feafe4f60d48d84eb02f5983925c03e74de332e6521c5ba704b0482c55/vaibot_hermes_circuitbreaker-0.2.0-py3-none-any.whl",
+  "sha256": "9c1181aee1fcc4127d5fd58b465998db9c0fe6851098444b32cfa1b3f6bca69c",
+  "size": 193322,
+  "packageDir": "vaibot"
+}

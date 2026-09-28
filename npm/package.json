@@ -1,0 +1,50 @@
+{
+  "name": "@vaibot/hermes-circuitbreaker-plugin",
+  "version": "0.2.0",
+  "description": "VAIBot governance plugin for Hermes — intercepts tool calls, classifies risk, enforces policy, and creates tamper-evident audit receipts with on-chain provenance anchoring. Installs the published PyPI artifact, verified by digest.",
+  "license": "MIT",
+  "author": "Campbell Labs LLC",
+  "type": "module",
+  "bin": {
+    "vaibot-hermes": "./bin/vaibot-hermes.mjs"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "governance",
+    "ai-governance",
+    "circuit-breaker",
+    "guardrails",
+    "agent-safety",
+    "security",
+    "audit",
+    "provenance",
+    "hermes",
+    "hermes-agent",
+    "plugin",
+    "hooks",
+    "ai-agents",
+    "vaibot"
+  ],
+  "homepage": "https://www.vaibot.io",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vaibot-io/hermes-circuitbreaker-plugin.git"
+  },
+  "bugs": {
+    "url": "https://github.com/vaibot-io/hermes-circuitbreaker-plugin/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}
