@@ -30,6 +30,17 @@
 # `workflow_dispatch` exists for the FIRST publish, before any release exists, and
 # for re-running a failed upload. It still refuses a version already on PyPI, because
 # PyPI does.
+#
+# ── Two registries, one run ───────────────────────────────────────────────────
+# PyPI is the source of truth for the plugin. npm carries an INSTALLER that fetches
+# the wheel and verifies it against a pinned SHA-256 (see npm/README.md for why it is
+# not a pip wrapper and not a second copy).
+#
+# That digest cannot be known before the wheel is built, so `publish-npm` computes it
+# from the artifact this run produced and injects it. Publishing both from one run is
+# the point: the alternative is a human copying a hash between two releases, and the
+# two registries then disagree the first time someone forgets. Nothing here overwrites
+# the version — that still comes from vaibot/__init__.py and is checked against the tag.
 
 name: publish
 
@@ -179,3 +190,149 @@ jobs:
           # PEP 740 attestations: signed provenance linking the uploaded artifact back
           # to this workflow run. Apt for a package whose product is provenance.
           attestations: true
+
+  publish-npm:
+    name: publish the installer to npm
+    # Only after PyPI has actually accepted the wheel. An installer pinning a digest
+    # for an artifact that does not exist would be worse than no installer.
+    needs: publish
+    if: github.event_name == 'release' || inputs.dry_run == false
+    runs-on: ubuntu-latest
+
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/@vaibot/hermes-circuitbreaker-plugin
+
+    permissions:
+      # For npm provenance (a signed statement linking the tarball to this run).
+      # Authentication is still NODE_AUTH_TOKEN below; this is not auth.
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      # npm's own Trusted Publishing (OIDC) needs a recent npm. Upgrading here means
+      # this job works whichever auth path is configured, rather than depending on
+      # whatever npm shipped with the Node image.
+      - name: Use a recent npm
+        run: npm install -g npm@latest && npm --version
+
+      # Say which path is in play BEFORE attempting the publish, because "401
+      # Unauthorized" from npm does not distinguish "no token" from "wrong token"
+      # from "trusted publishing not configured for this package".
+      - name: Report the auth path
+        run: |
+          if [ -n "${NODE_AUTH_TOKEN}" ]; then
+            echo "auth: NPM_TOKEN secret is present — publishing with a token."
+          else
+            echo "auth: no NPM_TOKEN secret. Relying on npm Trusted Publishing (OIDC)."
+            echo "      That must be configured for @vaibot/hermes-circuitbreaker-plugin"
+            echo "      on npmjs.com, naming this repository and .github/workflows/publish.yml."
+            echo "      If it is not, the publish below will fail with 401 and nothing is lost."
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      # The digest is computed from the wheel THIS RUN built and uploaded, then
+      # cross-checked against what PyPI now reports for the same file. If those two
+      # disagree, the file that landed is not the file we built, and that is a stop.
+      - name: Pin the wheel this run published
+        run: |
+          python3 - <<'PY'
+          import glob, hashlib, io, json, os, re, sys, time, urllib.request
+
+          whl = glob.glob("dist/*.whl")
+          assert len(whl) == 1, f"expected exactly one wheel, found {whl}"
+          whl = whl[0]
+          local = hashlib.sha256(open(whl, "rb").read()).hexdigest()
+          size = os.path.getsize(whl)
+          name = os.path.basename(whl)
+          print(f"built:  {name}  sha256={local}  {size} bytes")
+
+          manifest_path = "npm/lib/artifact.json"
+          manifest = json.load(io.open(manifest_path, encoding="utf-8"))
+          version = manifest["version"]
+          project = manifest["pypiProject"]
+
+          # The version in the manifest must be the one we just built, or the installer
+          # would describe one release and fetch another.
+          m = re.search(r"-(\d+\.\d+\.\d+[^-]*)-py3", name)
+          built_version = m.group(1) if m else None
+          if built_version != version:
+              sys.exit(f"npm/lib/artifact.json says {version} but the wheel is {built_version}. "
+                       "Bump it in the same commit as vaibot/__init__.py.")
+
+          # PyPI's JSON API lags the upload slightly; poll rather than guess the URL,
+          # which is content-addressed and not derivable from the filename.
+          url = None
+          for attempt in range(12):
+              try:
+                  with urllib.request.urlopen(f"https://pypi.org/pypi/{project}/{version}/json", timeout=20) as r:
+                      data = json.load(r)
+                  for f in data["urls"]:
+                      if f["filename"] == name:
+                          url = f["url"]
+                          remote = f["digests"]["sha256"]
+                          break
+                  if url:
+                      break
+              except Exception as e:
+                  print(f"  attempt {attempt+1}: {e}")
+              time.sleep(10)
+          if not url:
+              sys.exit(f"{name} did not appear on PyPI for {project} {version} after ~2 minutes")
+
+          if remote != local:
+              sys.exit(f"DIGEST MISMATCH\n  built on this runner: {local}\n  served by PyPI:      {remote}\n"
+                       "The file that landed is not the file this run built.")
+          print(f"cross-checked against PyPI: {remote}")
+
+          manifest["filename"] = name
+          manifest["url"] = url
+          manifest["sha256"] = local
+          manifest["size"] = size
+          # ensure_ascii=False, because json.dumps escapes the em-dashes in _comment
+          # to \u2014 and that has already shipped once in this repo.
+          io.open(manifest_path, "w", encoding="utf-8").write(
+              json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
+          )
+          print(f"pinned {manifest_path}")
+          PY
+
+      - name: Show what was pinned
+        run: |
+          echo "::group::npm/lib/artifact.json"
+          cat npm/lib/artifact.json
+          echo "::endgroup::"
+          git --no-pager diff --stat npm/lib/artifact.json
+
+      # The installer's own tests, against the digest that was just pinned. This is
+      # also what catches a placeholder digest making it to a release.
+      - name: Test the installer
+        working-directory: npm
+        run: npm test
+
+      - name: Publish
+        working-directory: npm
+        # --provenance emits a signed link from this tarball back to this workflow run,
+        # the npm counterpart of the PEP 740 attestations on the wheel. It needs
+        # id-token: write, which this job has, and is independent of how auth happens.
+        #
+        # Auth is either the NPM_TOKEN secret or npm Trusted Publishing (OIDC). The
+        # token path is what definitely works today; OIDC is the better posture and the
+        # one that matches the wheel's, so prefer it once it is configured — there is
+        # then no long-lived credential in this repository at all.
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
