@@ -1,0 +1,59 @@
+{
+  "name": "@vaibot/guard",
+  "version": "2.2.1",
+  "description": "VAIBot Guard — local policy enforcement + tamper-evident audit daemon for AI agent tool calls. The universal decision authority the codex/claudecode/openclaw plugins route through.",
+  "type": "module",
+  "license": "MIT",
+  "homepage": "https://www.vaibot.io",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vaibot-io/vaibot-guard.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "vaibot-guard": "./scripts/vaibot-guard.mjs",
+    "vaibot-guard-service": "./scripts/vaibot-guard-service.mjs"
+  },
+  "exports": {
+    "./service": "./scripts/vaibot-guard-service.mjs",
+    "./cli": "./scripts/vaibot-guard.mjs",
+    "./classifier": {
+      "types": "./scripts/classifier.d.mts",
+      "default": "./scripts/classifier.mjs"
+    },
+    "./creds": {
+      "types": "./scripts/lib/creds.d.mts",
+      "default": "./scripts/lib/creds.mjs"
+    },
+    "./circuit-breaker": {
+      "types": "./scripts/lib/circuit-breaker.d.mts",
+      "default": "./scripts/lib/circuit-breaker.mjs"
+    },
+    "./guard-client": {
+      "types": "./scripts/lib/guard-client.d.mts",
+      "default": "./scripts/lib/guard-client.mjs"
+    },
+    "./guard-launch": {
+      "types": "./scripts/lib/guard-launch.d.mts",
+      "default": "./scripts/lib/guard-launch.mjs"
+    },
+    "./guard-bootstrap": {
+      "types": "./scripts/lib/guard-bootstrap.d.mts",
+      "default": "./scripts/lib/guard-bootstrap.mjs"
+    }
+  },
+  "files": [
+    "scripts/",
+    "references/",
+    "README.md",
+    "THREAT-MODEL.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  }
+}

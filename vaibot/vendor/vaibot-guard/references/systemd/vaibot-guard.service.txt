@@ -1,0 +1,30 @@
+[Unit]
+Description=VAIBot Guard policy service (user)
+After=network-online.target
+Wants=network-online.target
+# On OpenClaw hosts, also order after the gateway. The `install-local` helper adds
+# these automatically when the `openclaw` binary is on PATH:
+#   After=network-online.target openclaw-gateway.service
+#   Wants=openclaw-gateway.service
+#   PartOf=openclaw-gateway.service
+
+[Service]
+Type=simple
+# Set to the package's install directory. `vaibot-guard install-local` resolves
+# this automatically; adjust if you hand-write the unit (e.g. under `npm root -g`).
+WorkingDirectory=%h/.local/share/vaibot-guard
+
+EnvironmentFile=%h/.config/vaibot-guard/vaibot-guard.env
+
+# Absolute path, written by `vaibot-guard install-local`. A relative path
+# resolved against WorkingDirectory would run whatever code later sat there.
+ExecStart=/usr/bin/env node %h/.local/share/vaibot-guard/scripts/vaibot-guard-service.mjs
+Restart=on-failure
+RestartSec=2
+
+# Hardening (user-scope, safe defaults)
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
