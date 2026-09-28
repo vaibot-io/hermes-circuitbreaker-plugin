@@ -18,9 +18,11 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import vaibot  # noqa: E402
 from vaibot import guard as guard_client  # noqa: E402
 from vaibot.breaker import BreakerStore  # noqa: E402
 from vaibot.containment import Containment, containment_file, read_containment  # noqa: E402
@@ -210,3 +212,48 @@ class TestContainmentRung(HomeSandbox):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestABlankToolNameIsNotExempt(unittest.TestCase):
+    """A call the host did not name is governed like any other.
+
+    This was the one input that bought an ungoverned call: ``_should_skip`` returned
+    True for a blank name, and it runs ahead of :func:`Engine.decide`, so it ran
+    ahead of the account-wide containment stop as well. Blank and unknown tools are
+    exactly what a stop has to catch.
+    """
+
+    def test_a_blank_name_is_not_skipped(self):
+        # The hook normalises a missing name with `str(kwargs.get("tool_name") or "")`,
+        # so these are the two values the predicate can actually receive.
+        for name in ("", "   "):
+            with self.subTest(name=repr(name)):
+                self.assertFalse(
+                    vaibot._should_skip(name),
+                    "a blank tool name must not be exempt from governance",
+                )
+
+    def test_the_governance_namespace_is_still_skipped(self):
+        for name in ("mcp__vaibot", "mcp__vaibot__vaibot_status"):
+            with self.subTest(name=name):
+                self.assertTrue(vaibot._should_skip(name))
+
+    def test_a_lookalike_namespace_is_never_skipped(self):
+        for name in ("mcp__vaibotage", "mcp__vaibotage__run", "mcp__vaibotXYZ"):
+            with self.subTest(name=name):
+                self.assertFalse(vaibot._should_skip(name))
+
+    def test_contained_a_blank_name_is_blocked(self):
+        """The whole point: it reaches rung 0 now."""
+        with tempfile.TemporaryDirectory() as home:
+            guard_dir = Path(home) / ".vaibot" / "guard"
+            guard_dir.mkdir(parents=True)
+            (guard_dir / "containment.json").write_text(
+                json.dumps({"contained": True, "reason": "blank-name test", "at": "2026-09-27T00:00:00Z"})
+            )
+            with mock.patch.dict(os.environ, {"HOME": home}, clear=False):
+                with mock.patch.object(Path, "home", staticmethod(lambda: Path(home))):
+                    directive = vaibot._on_pre_tool_call(tool_name="", args={}, tool_call_id="blank1")
+        self.assertIsNotNone(directive, "a blank name must not proceed while contained")
+        self.assertEqual(directive["action"], "block")
+        self.assertIn("blank-name test", directive["message"])
