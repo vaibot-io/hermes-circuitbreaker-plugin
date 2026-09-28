@@ -7,12 +7,29 @@ name = "vaibot-hermes-circuitbreaker"
 # Single-sourced from vaibot/__init__.py (see [tool.hatch.version]) so the wheel,
 # the module and plugin.yaml cannot disagree about what is installed.
 dynamic = ["version"]
-description = "VAIBot governance plugin for Hermes — routes tool calls through the local VAIBot guard, enforces policy, and writes signed, tamper-evident receipts."
+description = "VAIBot governance plugin for Hermes — intercepts tool calls, classifies risk, enforces policy, and creates tamper-evident audit receipts with on-chain provenance anchoring."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Campbell Labs LLC" }]
-keywords = ["hermes", "governance", "circuit-breaker", "vaibot", "agent-safety", "audit", "provenance"]
+# Kept in step with the npm breakers (claudecode, codex, cursor, openclaw) so the
+# five are discoverable through the same terms whichever registry someone searches.
+# `guardrails`, `governance`, `circuit-breaker`, `vaibot`, `audit` and `provenance`
+# are the set all five share; the rest are either family-wide or Hermes-specific.
+#
+# Deliberately NOT listed: `claude-code`, `codex`, `openai`, `cursor`. This plugin
+# governs Hermes. Claiming the other hosts' names would put it in searches it does
+# not belong in, which is keyword spam however convenient it looks.
+keywords = [
+  # what it is
+  "governance", "ai-governance", "circuit-breaker", "guardrails", "agent-safety", "security",
+  # what it produces
+  "audit", "provenance",
+  # what it plugs into
+  "hermes", "hermes-agent", "plugin", "hooks", "ai-agents",
+  # who ships it
+  "vaibot",
+]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
@@ -25,8 +42,12 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Environment :: Console",
+  "Intended Audience :: System Administrators",
   "Topic :: Security",
+  "Topic :: Software Development :: Libraries :: Python Modules",
   "Topic :: Software Development :: Quality Assurance",
+  "Topic :: System :: Logging",
   "Typing :: Typed",
 ]
 
@@ -39,6 +60,7 @@ dependencies = []
 
 [project.urls]
 Homepage = "https://www.vaibot.io"
+Documentation = "https://github.com/vaibot-io/hermes-circuitbreaker-plugin#readme"
 Repository = "https://github.com/vaibot-io/hermes-circuitbreaker-plugin"
 Issues = "https://github.com/vaibot-io/hermes-circuitbreaker-plugin/issues"
 
