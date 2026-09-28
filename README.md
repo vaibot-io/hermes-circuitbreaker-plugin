@@ -28,29 +28,40 @@ When the guard can't answer, the plugin degrades rather than bricking the agent.
 ### Approvals, and what still blocks
 
 - **The floor holds in every mode.** On a degraded path a classifier `deny` still blocks, even under observe or `VAIBOT_FAIL_OPEN`. Those settings change whether you are asked, never whether a catastrophic action can run.
+- **A call that cannot be classified is asked about, in every mode.** If no guard CLI can be reached — none installed, no Node for the bundled copy, or one too old to have `classify` — there is no floor left to apply, so the call escalates rather than proceeding. Observe behaves exactly as enforce does here rather than becoming stricter than it.
 - **An escalation Hermes would grant automatically is refused unless policy says otherwise.** Under `--yolo`, `/yolo`, or `approvals.cron_mode: approve`, Hermes approves plugin escalations before anyone sees a prompt. The plugin reports that posture on each decision and the guard applies the account's `hostBypassAction`: `deny` (the default) blocks and mints no approval, `approve` hands it to Hermes' prompt and records the receipt as `bypassed`, never `approved`. Reporting rather than deciding is deliberate — loosening a bypass takes a verified signed bundle, which a plugin cannot mint. Every degraded rung keeps refusing, because no guard answered there and so no policy authorised anything. If Hermes' approval internals can't be read, the plugin assumes a bypass is active: failing to detect one must cost a prompt, never an ungoverned action.
 - **`[a]lways` is scoped to the policy rule that fired**, so one answer covers what the human was asked about ("writes outside the workspace") rather than one exact path — and still can't blanket a tool, since a different rule on the same tool asks again. Against a guard that names no rule it falls back to the exact call (tool + arguments), which under-grants rather than over-grants.
 
 ## Install
 
-Two ways in, and the same `vaibot/` tree serves both.
-
 ```bash
-# directory install — no build step
-cp -r vaibot ~/.hermes/plugins/vaibot
-hermes plugins enable vaibot
-
-# or as a package, from a checkout of this repo
-pip install .
+pip install vaibot-hermes-circuitbreaker
 hermes plugins enable vaibot
 ```
 
-Not on PyPI, so install the package from a checkout or a git URL rather than by
-name. It has no dependencies, so there is nothing else to fetch.
+A directory install works too, with no build step — `cp -r vaibot ~/.hermes/plugins/vaibot`.
+The same `vaibot/` tree serves both.
 
-Wants `vaibot-guard` on `PATH` (or `VAIBOT_GUARD_CLI`) — that is where the
-classifier floor, first-run provisioning and the guard's launcher come from. If no
-guard is running, one is started for you; see [the local guard](#the-local-guard).
+**One install is the whole thing.** The guard ships inside the package, as it does in
+the Claude Code, Codex, Cursor and OpenClaw plugins, so there is no second thing to
+fetch and no order to get right. No Python dependencies either — the plugin loads
+in-process inside your agent on a security path, so it adds none.
+
+Needs **Node** on the machine, which is what runs the guard. If you already have
+`vaibot-guard` on `PATH` that one is used in preference to the bundled copy, so a
+full VAIBot install keeps a single guard rather than quietly running the one inside a
+plugin. `VAIBOT_GUARD_CLI` overrides both.
+
+`/vaibot status` tells you which one answered, and whether it is new enough to
+provide the floor:
+
+```
+Classifier    from PATH · `classify` answers
+Classifier    vendored with this plugin · `classify` answers
+Classifier    NOT FOUND · degraded paths cannot reach the floor, so they ask instead
+```
+
+If no guard is *running*, one is started for you; see [the local guard](#the-local-guard).
 
 ## Settings
 

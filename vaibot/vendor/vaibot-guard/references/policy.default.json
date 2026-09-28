@@ -1,0 +1,42 @@
+{
+  "version": "0.3",
+  "_notes": "Minimal Tier-1 floor: outbound network + privilege + core secrets + system-config commands all ASK (human approval, NOT hard-deny) so operators can manage schedulers and host process supervisors under approval and fresh-install bootstrap is not blocked. Only the classifier's catastrophic pattern floor (rm -rf /, mkfs, fork bomb, guard self-protection, ...) hard-denies. Installers are preset-controlled (allowed by default; Balanced/Strict escalate via signed approveTokens). Signed preset bundles tighten this via deny/approveTokens.",
+  "denyTokens": [],
+  "approveTokens": [
+    "systemctl",
+    "service",
+    "launchctl",
+    "crontab",
+    "cron",
+    "curl",
+    "wget",
+    "ssh",
+    "scp",
+    "sftp",
+    "rsync",
+    "telnet",
+    "ftp",
+    "nc",
+    "ncat",
+    "netcat",
+    "sudo",
+    "su",
+    ".env",
+    "id_rsa",
+    "id_ed25519",
+    ".pem"
+  ],
+  "allowlistedDomains": ["example.com"],
+  "allowlistedDomainsNotes": "Exact-match only. Use '*.example.com' to allow subdomains.",
+  "denyPaths": ["~/.ssh", "/etc", "/var/lib"],
+  "redactPatterns": [
+    "(?i)bearer\\s+[A-Za-z0-9._-]+",
+    "(?i)api[_-]?key\\s*[:=]\\s*[^\\s]+",
+    "(?i)token\\s*[:=]\\s*[^\\s]+",
+    "(?i)secret\\s*[:=]\\s*[^\\s]+",
+    "(?i)password\\s*[:=]\\s*[^\\s]+"
+  ],
+  "redactEnvKeyPatterns": ["(?i)key", "(?i)token", "(?i)secret", "(?i)pass"],
+  "fileMutationOutsideWorkspaceAction": "approve",
+  "fileMutationDeniedPathAction": "deny"
+}

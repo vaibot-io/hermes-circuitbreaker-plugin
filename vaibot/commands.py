@@ -22,6 +22,8 @@ from datetime import datetime, timezone
 from typing import Any, Mapping, Optional
 
 from . import guard as guard_client
+from . import localcli
+from .localcli import resolve_guard_cli
 from .breaker import BreakerStore
 from .containment import read_containment
 from .creds import resolve_credentials
@@ -68,6 +70,26 @@ def _grid(rows: list[tuple[str, str]]) -> list[str]:
     return [f"  {label.ljust(width)}   {value}" for label, value in rows]
 
 
+def _classifier_row(argv, source: str) -> str:
+    """What the degraded paths can actually reach, and what to do if that is nothing.
+
+    Says which guard would answer AND whether it is new enough, because "a guard is
+    installed" and "the floor works" are different facts.
+    """
+    if source == "none":
+        return "NOT FOUND · degraded paths cannot reach the floor, so they ask instead"
+    if source == "vendored-no-node":
+        return "vendored copy present but node is missing · install node to use the floor"
+    if source == "override-no-node":
+        return "VAIBOT_GUARD_CLI names a .mjs but node is missing"
+
+    where = {"path": "from PATH", "vendored": "vendored with this plugin", "override": "VAIBOT_GUARD_CLI"}.get(source, source)
+    probe = localcli.classify("terminal", {"command": "true"}, env=None)
+    if probe is None:
+        return f"{where} · too old for `classify` · degraded paths ask instead of applying the floor"
+    return f"{where} · `classify` answers"
+
+
 def status_text(env: Optional[Mapping[str, str]] = None) -> str:
     rows: list[tuple[str, str]] = []
     footer: list[str] = []
@@ -106,6 +128,14 @@ def status_text(env: Optional[Mapping[str, str]] = None) -> str:
             rows.append(("Guard", f"answering · {health.version or 'unknown version'}"))
             if health.capabilities:
                 rows.append(("Understands", ", ".join(sorted(health.capabilities))))
+
+    # WHICH guard CLI the degraded paths would reach, which is not the same
+    # question as whether a daemon is answering. A machine can have a healthy
+    # daemon and still have no usable `classify`, and that combination is exactly
+    # what went unnoticed here for weeks: a 2.1.1 on PATH, predating the
+    # subcommand, so every degraded path silently had no floor to consult.
+    argv, source = resolve_guard_cli(env)
+    rows.append(("Classifier", _classifier_row(argv, source)))
 
     # Identity, never the secret.
     try:

@@ -444,12 +444,22 @@ class Engine:
                 f"VAIBot floor — {tool_name} blocked ({verdict.reason}), enforced even while governance is degraded.",
                 rung,
             )
+        if verdict is None:
+            # No classifier to consult: no guard on PATH, no node to run the
+            # vendored copy, or a guard CLI too old to have `classify`.
+            #
+            # Checked BEFORE `lenient`, and that order is the point. The floor on a
+            # degraded path IS the guard's classifier, so when the classifier is
+            # absent there is no floor left to enforce — and allowing here would let
+            # a catastrophic call through in observe or under FAIL_OPEN, which is
+            # precisely what those settings are documented NOT to do. They change
+            # whether you are asked, never whether a catastrophic action can run.
+            #
+            # This escalates rather than blocks, so observe behaves exactly as
+            # enforce does in this case rather than becoming stricter than it.
+            return self._escalate(tool_name, params, "VAIBot can't classify this call locally", "unknown", rung, note=note)
         if settings.lenient:
             return _allow(rung)
-        if verdict is None:
-            # No classifier to consult (no node, or a guard CLI too old to have
-            # `classify`). Put a human in the loop rather than guess.
-            return self._escalate(tool_name, params, "VAIBot can't classify this call locally", "unknown", rung, note=note)
         if verdict.verdict_hint == "ask":
             return self._escalate(tool_name, params, verdict.reason, verdict.risk, rung, note=note)
         return _allow(rung)

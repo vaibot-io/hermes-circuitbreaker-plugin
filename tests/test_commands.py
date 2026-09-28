@@ -160,7 +160,7 @@ class TestStatusContent(Sandbox):
         self.with_guard(guard_client.Health(capabilities=frozenset({"rule-id"}), version="2.2.0"))
         self.seed_creds()
         grid = parse_grid(commands.handle("status", self.env))
-        self.assertEqual(set(grid), {"Containment", "Guard", "Understands", "Account", "Breaker"})
+        self.assertEqual(set(grid), {"Containment", "Guard", "Understands", "Classifier", "Account", "Breaker"})
         for label, value in grid.items():
             self.assertTrue(value, f"{label} has no value")
 

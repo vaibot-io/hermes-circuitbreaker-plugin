@@ -22,6 +22,7 @@ import os
 import shutil
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from . import config
@@ -31,24 +32,66 @@ CLASSIFY_TIMEOUT_S = 5.0
 BOOTSTRAP_TIMEOUT_S = 15.0
 
 
-def guard_cli(env: Optional[Mapping[str, str]] = None) -> Optional[List[str]]:
-    """argv prefix for the guard CLI, or None when there isn't one.
+#: The guard shipped inside this package. Every other breaker vendors the guard
+#: too, which is what makes a single `npm install` a complete install; this is the
+#: same property for `pip install`. Someone may meet this plugin before they ever
+#: meet the CLI, and "now go install something else" is not a front door.
+#:
+#: Vendored from the published tarball and verified against the digest the registry
+#: reports (see vendor/vaibot-guard.sha1), so the committed copy is provably what
+#: npm serves rather than whatever happened to be on the build machine.
+VENDORED_GUARD = ("vendor", "vaibot-guard", "scripts", "vaibot-guard.mjs")
 
-    ``VAIBOT_GUARD_CLI`` names it explicitly (a ``.mjs``/``.js`` path runs under
-    node); otherwise ``vaibot-guard`` on PATH.
+
+def vendored_guard_path() -> Optional[str]:
+    """Absolute path to the guard CLI shipped with this package, if present."""
+    p = Path(__file__).resolve().parent.joinpath(*VENDORED_GUARD)
+    return str(p) if p.is_file() else None
+
+
+def resolve_guard_cli(env: Optional[Mapping[str, str]] = None) -> tuple:
+    """``(argv, source)`` for the guard CLI. ``source`` is for diagnostics only.
+
+    Resolution order, and the reason for it:
+
+    1. ``VAIBOT_GUARD_CLI`` — an explicit choice always wins.
+    2. ``vaibot-guard`` on PATH — a system install is preferred over the vendored
+       copy so a NEWER guard is used when one exists, and so a machine with the
+       full VAIBot stack keeps one guard rather than quietly running the one that
+       happens to sit inside a plugin.
+    3. The vendored copy — the floor still applies on a machine that has only this
+       plugin. It needs node, which this plugin already required.
+    4. ``(None, "none")`` — no guard. The caller must treat that as "cannot
+       classify", never as "safe"; see :func:`Engine._degraded`.
     """
-    # Layered so ``guard_cli`` can also come from Hermes plugin config; PATH and
-    # every other name reads straight through.
     e = config.layered(env)
     search_path = e.get("PATH")
     override = (e.get("VAIBOT_GUARD_CLI") or "").strip()
     if override:
         if override.endswith((".mjs", ".js")):
             node = shutil.which("node", path=search_path)
-            return [node, override] if node else None
-        return [override]
+            return ([node, override], "override") if node else (None, "override-no-node")
+        return ([override], "override")
+
     found = shutil.which("vaibot-guard", path=search_path)
-    return [found] if found else None
+    if found:
+        return ([found], "path")
+
+    vendored = vendored_guard_path()
+    if vendored:
+        node = shutil.which("node", path=search_path)
+        if node:
+            return ([node, vendored], "vendored")
+        # The files are here but nothing can run them. Worth distinguishing from
+        # "no guard at all", because the fix is different: install node.
+        return (None, "vendored-no-node")
+
+    return (None, "none")
+
+
+def guard_cli(env: Optional[Mapping[str, str]] = None) -> Optional[List[str]]:
+    """argv prefix for the guard CLI, or None when there isn't one."""
+    return resolve_guard_cli(env)[0]
 
 
 def run_json(
