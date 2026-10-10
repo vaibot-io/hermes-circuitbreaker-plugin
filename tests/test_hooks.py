@@ -120,12 +120,17 @@ class FinalizeMappingTests(unittest.TestCase):
             ("blocked", None, None),
         )
 
-    def test_granted_escalation_is_recorded_as_run(self):
+    def test_granted_escalation_is_recorded_as_approved(self):
+        # The gate let it through, so it was approved — and saying so is what spends
+        # the guard's approval record. Left pending, it sat on the dashboard as an
+        # open question for a call that already ran, and could still be redeemed.
+        # No scope: the gate also passes silently on an earlier [s]ession/[a]lways
+        # grant, which can't be told apart from a prompt answered now.
         self.assertEqual(vaibot._finalize_fields({"escalated": True, "gate_asked": True}, "ok"),
-                         ("allowed", None, None))
-        # Approved, ran, and failed: it ran, so no denial.
+                         ("allowed", "approved", None))
+        # Approved, ran, and failed: still approved, never a denial.
         self.assertEqual(vaibot._finalize_fields({"escalated": True, "gate_asked": True}, "error"),
-                         ("blocked", None, None))
+                         ("blocked", "approved", None))
 
     def test_ordinary_calls(self):
         self.assertEqual(vaibot._finalize_fields({"escalated": False}, "ok"), ("allowed", None, None))
@@ -159,6 +164,36 @@ class PostToolCallTests(HookCase):
         self.assertEqual(kwargs["outcome"], "blocked")
         self.assertIsNone(kwargs["approval"], "nobody was asked, so nobody denied it")
         self.assertIsNone(kwargs["approval_scope"])
+
+    def test_a_granted_escalation_finalizes_approved_and_ok(self):
+        vaibot._runs["tc3"] = {"run_id": "run_3", "escalated": True, "gate_asked": True}
+        with mock.patch.object(guard_client, "read_lock", return_value=LOCK), \
+             mock.patch.object(guard_client, "finalize_tool",
+                               return_value=guard_client.GuardResponse(ok=True)) as fin:
+            vaibot._on_post_tool_call(tool_name="terminal", tool_call_id="tc3", session_id="s", status="ok", duration_ms=5)
+        kwargs = fin.call_args.kwargs
+        self.assertEqual((kwargs["outcome"], kwargs["approval"], kwargs["ok"]), ("allowed", "approved", True))
+        self.assertIsNone(kwargs["approval_scope"], "no prompt is claimed")
+
+    def test_a_failed_call_finalizes_ok_false(self):
+        # The guard marks a receipt failed only from ok=False — outcome alone was
+        # recorded as "allowed".
+        vaibot._runs["tc4"] = {"run_id": "run_4", "escalated": False, "gate_asked": False}
+        with mock.patch.object(guard_client, "read_lock", return_value=LOCK), \
+             mock.patch.object(guard_client, "finalize_tool",
+                               return_value=guard_client.GuardResponse(ok=True)) as fin:
+            vaibot._on_post_tool_call(tool_name="terminal", tool_call_id="tc4", session_id="s",
+                                      status="error", error_message="exit 1", duration_ms=2)
+        kwargs = fin.call_args.kwargs
+        self.assertEqual((kwargs["outcome"], kwargs["ok"], kwargs["approval"]), ("blocked", False, None))
+
+    def test_a_blocked_call_finalizes_ok_false(self):
+        vaibot._runs["tc5"] = {"run_id": "run_5", "escalated": True, "gate_asked": True}
+        with mock.patch.object(guard_client, "read_lock", return_value=LOCK), \
+             mock.patch.object(guard_client, "finalize_tool",
+                               return_value=guard_client.GuardResponse(ok=True)) as fin:
+            vaibot._on_post_tool_call(tool_name="terminal", tool_call_id="tc5", session_id="s", status="blocked")
+        self.assertIs(fin.call_args.kwargs["ok"], False)
 
     def test_nothing_to_finalize_without_a_run(self):
         with mock.patch.object(guard_client, "finalize_tool") as fin:

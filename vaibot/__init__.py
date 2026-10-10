@@ -176,9 +176,21 @@ def _finalize_fields(entry: Dict[str, Any], status: str) -> tuple:
     the guard's receipt vocabulary has one state for "not granted" — so nothing
     honest distinguishes them yet. Claiming ``choice: deny`` for a timeout would be
     the same error in miniature.
+
+    A call the gate let THROUGH (``ok``, or ``error`` — granted, ran, and failed)
+    was approved, and the guard is told so: ``approval="approved"`` is what spends
+    the run's approval record (``used``). Without it the record sat ``pending`` on
+    the dashboard until its TTL — an open question for a call that already ran —
+    and could still have been approved there and redeemed. No scope is claimed:
+    Hermes' gate also passes a call silently on an earlier ``[s]ession`` /
+    ``[a]lways`` grant, and nothing here can tell that from a prompt answered now.
+    (Under the host's own auto-approve the guard records the run as bypassed, not
+    approved — its bypass check comes first.)
     """
-    if entry.get("gate_asked") and status == "blocked":
-        return "denied_by_reviewer", "denied", "prompt"
+    if entry.get("gate_asked"):
+        if status == "blocked":
+            return "denied_by_reviewer", "denied", "prompt"
+        return ("allowed" if status == "ok" else "blocked"), "approved", None
     return ("allowed" if status == "ok" else "blocked"), None, None
 
 
@@ -199,13 +211,16 @@ def _on_post_tool_call(**kwargs: Any) -> None:
             logger.warning("vaibot: guard gone; run %s left unfinalized", entry["run_id"])
             return None
 
-        outcome, approval, approval_scope = _finalize_fields(entry, str(kwargs.get("status") or "ok"))
+        status = str(kwargs.get("status") or "ok")
+        outcome, approval, approval_scope = _finalize_fields(entry, status)
         error_message = kwargs.get("error_message")
         resp = guard_client.finalize_tool(
             lock,
             session_id=str(kwargs.get("session_id") or "hermes"),
             run_id=str(entry["run_id"]),
             outcome=outcome,
+            # The guard reads "the action failed" from ok=False, not from outcome.
+            ok=status == "ok",
             duration_ms=kwargs.get("duration_ms"),
             error=str(error_message) if error_message else None,
             approval=approval,

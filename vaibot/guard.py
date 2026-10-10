@@ -271,6 +271,7 @@ def finalize_tool(
     session_id: str,
     run_id: str,
     outcome: str,
+    ok: Optional[bool] = None,
     duration_ms: Optional[float] = None,
     error: Optional[str] = None,
     approval: Optional[str] = None,
@@ -283,11 +284,17 @@ def finalize_tool(
     guard derives the receipt's approval status from the finalize, so an escalated
     run finalized without it is written as approved.
 
+    ``ok`` is what the guard reads to decide whether the action *failed* on its
+    receipt (``ok=False`` → failed); ``outcome`` alone does not mark a failure.
+    ``approval="approved"`` spends the run's approval record (``used``).
+
     ``approval_scope="prompt"`` records that a prompt actually fired, which is
     what separates "the gate refused" from "VAIBot refused before anyone was
     asked". The guard's vocabulary is ``prompt`` | ``session-grant``.
     """
     result: Dict[str, Any] = {"outcome": outcome}
+    if ok is not None:
+        result["ok"] = bool(ok)
     if approval:
         result["approval"] = approval
     if approval_scope:
