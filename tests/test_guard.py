@@ -234,6 +234,20 @@ class FinalizeTests(unittest.TestCase):
             )
 
 
+    def test_ok_is_sent_when_given(self):
+        # ok=False is how the guard learns the action failed; outcome alone isn't read.
+        with FakeGuard() as g:
+            guard_client.finalize_tool(g.lock, session_id="s", run_id="r", outcome="blocked", ok=False, error="exit 1")
+            self.assertIs(g.server.last_body["result"]["ok"], False)
+            guard_client.finalize_tool(g.lock, session_id="s", run_id="r", outcome="allowed", ok=True)
+            self.assertIs(g.server.last_body["result"]["ok"], True)
+
+    def test_approved_is_sent(self):
+        # What spends the run's approval record on the guard.
+        with FakeGuard() as g:
+            guard_client.finalize_tool(g.lock, session_id="s", run_id="r", outcome="allowed", ok=True, approval="approved")
+            self.assertEqual(g.server.last_body["result"], {"outcome": "allowed", "ok": True, "approval": "approved"})
+
 class HealthTests(unittest.TestCase):
     def test_health_true_and_false(self):
         with FakeGuard() as g:
